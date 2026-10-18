@@ -7,7 +7,7 @@
 Lampa → Настройки → Расширения → «Добавить плагин» → адрес:
 
 ```
-https://cdn.jsdelivr.net/gh/bregalizzi/lampa-tv-torrents@main/tv_torrents.js
+https://cdn.jsdelivr.net/gh/Bregal1337/lampa-torrentplayer@main/tv_torrents.js
 ```
 
 Нужны настроенные в Lampa парсер (JacRed или Jackett) и TorrServer.
