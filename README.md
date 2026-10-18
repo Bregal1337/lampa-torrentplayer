@@ -7,8 +7,10 @@
 Lampa → Настройки → Расширения → «Добавить плагин» → адрес:
 
 ```
-https://cdn.jsdelivr.net/gh/Bregal1337/lampa-torrentplayer/tv_torrents.js
+https://bregal1337.github.io/tv.js
 ```
+
+Файл публикуется через GitHub Pages (репозиторий [bregal1337.github.io](https://github.com/Bregal1337/bregal1337.github.io)): после обновления новая версия доступна через несколько минут, Lampa подхватит её при следующем запуске.
 
 Нужны настроенные в Lampa парсер (JacRed или Jackett) и TorrServer.
 
