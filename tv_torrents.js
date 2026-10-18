@@ -7,7 +7,7 @@
   if (window.tvt_plugin_ready) return;
   window.tvt_plugin_ready = true;
 
-  var VERSION = '1.1.1';
+  var VERSION = '1.1.2';
 
   // ---------------------------------------------------------------------------
   // Разбор названия раздачи
@@ -180,6 +180,29 @@
     if (lower.indexOf('авторск') >= 0) addUnique(types, 'avo');
     if (lower.indexOf('одноголос') >= 0) addUnique(types, 'vo');
     if (lower.indexOf('любительск') >= 0) addUnique(types, 'amateur');
+  }
+
+  // Годы из названия: «2021» → [2021, 2021], «2002-2016» → [2002, 2016]
+  function parseYears(lower) {
+    var out = [];
+    var re = /(?:^|[^\d×xх])((?:19[2-9]|20[0-4])\d)(?:\s*[-–—]\s*((?:19[2-9]|20[0-4])\d))?(?![\dpixх×])/g;
+    var m;
+
+    while ((m = re.exec(lower))) {
+      var a = parseInt(m[1], 10);
+      var b = m[2] ? parseInt(m[2], 10) : a;
+
+      out.push([Math.min(a, b), Math.max(a, b)]);
+    }
+
+    return out;
+  }
+
+  // Раздача относится к фильму этого года (годов в названии нет — считаем, что да)
+  function yearMatches(r, year) {
+    if (!year || !r.years || !r.years.length) return true;
+
+    return r.years.some(function (y) { return year >= y[0] - 1 && year <= y[1] + 1; });
   }
 
   function parseSeasons(lower) {
@@ -372,8 +395,13 @@
     else if (/hdrip/.test(lower)) r.source = 'HDRip';
     else if (/dvd/.test(lower)) r.source = 'DVD';
 
-    r.cam = /\b(cam|camrip|ts|tc|telesync|hdts|tsrip|ts-rip|hdcam)\b/.test(lower) || lower.indexOf('экранка') >= 0;
+    r.cam = /\b(cam|camrip|ts|tc|telesynch?|telecine|hdts|tsrip|ts-rip|hdcam)\b/.test(lower) || lower.indexOf('экранка') >= 0;
     r.is3d = /\b3d\b/.test(lower) && !/\b2d\b/.test(lower);
+    r.years = parseYears(lower);
+    // Сборник фильмов (коллекция, трилогия, «6 x Blu-ray»)
+    r.pack = /коллекци|collection|антологи|anthology|трилоги|trilogy|квадрологи|quadrilogy|тетралоги|пенталоги|гексалоги|сага\b|saga\b|все части|\b\d+\s*[xх]\s*(blu-?ray|bd|dvd|web|bdrip|remux)/.test(lower);
+    // Образ диска (BDMV/VIDEO_TS): сотни служебных файлов, для потока не подходит
+    r.disc = /bdmv|video_ts|\bbd-?(25|50|66|100)\b|\bdvd-?(5|9)\b|blu-?ray/.test(lower) && !/remux|rip/.test(lower);
 
     if (/dolby vision|\bdv\b|\bdovi\b/.test(lower)) r.hdr = 'DV';
     else if (/hdr10\+|hdr10plus/.test(lower)) r.hdr = 'HDR10+';
@@ -533,6 +561,9 @@
     if (!seeds) s -= 30;
     if (r.cam) s -= 60;
     if (r.is3d) s -= 15;
+    // Сборник фильмов и образ диска — сотни файлов и десятки гигабайт, телевизору тяжело
+    if (r.pack && !r.seasons.length) s -= 50;
+    if (r.disc) s -= 25;
     if (r.types.indexOf('dub') >= 0) s += 6;
     if (r.source === 'Remux' && pref !== '4K') s -= 4;
 
@@ -971,6 +1002,8 @@
       if (r.channels) tags.append($('<span class="tvt-tag"></span>').text(r.channels));
       if (r.rus_subs) tags.append($('<span class="tvt-tag"></span>').text('Рус. субтитры'));
       if (r.is3d) tags.append($('<span class="tvt-tag tvt-tag--warn">3D</span>'));
+      if (r.pack && !r.seasons.length) tags.append($('<span class="tvt-tag tvt-tag--warn">Сборник</span>'));
+      if (r.disc) tags.append($('<span class="tvt-tag tvt-tag--warn">Образ диска</span>'));
       if (r.cam) tags.append($('<span class="tvt-tag tvt-tag--warn">Экранка</span>'));
 
       // Битрейт считаем только для фильмов: у сериала ffprobe описывает одну серию, а размер — всю раздачу
@@ -1339,12 +1372,33 @@
     $('body').removeClass('tvt-autopick');
   }
 
+  // Фильм: Lampa строит список и плейлист из всех видеофайлов раздачи разом. В образе диска
+  // или сборнике их сотни, и телевизор зависает. Оставляем только основные файлы (не меньше
+  // 40% самого большого, максимум 12): сам фильм, его части или фильмы сборника.
+  // Массив тот же, по которому Lampa потом идёт, поэтому меняем его на месте.
+  function keepMainFiles(items) {
+    var max = 0;
+
+    items.forEach(function (f) { max = Math.max(max, f.length || 0); });
+
+    if (!max) return;
+
+    var keep = items.filter(function (f) { return (f.length || 0) >= max * 0.4; }).slice(0, 12);
+
+    if (keep.length === items.length) return;
+
+    items.length = 0;
+    keep.forEach(function (f) { items.push(f); });
+  }
+
   function startAutoplay(el, movie, target, done) {
     finishAutoplay();
 
     autoplay = { target: target, files: [], picked: false, started: false, done: done, time: Date.now() };
 
     el.poster = movie.img;
+    // TorrServer подписывает торрент по title, у результатов парсера есть только Title
+    if (!el.title) el.title = el.Title;
 
     if (Lampa.Torrent.opened) Lampa.Torrent.opened(function () { markViewed(el); });
 
@@ -1387,6 +1441,8 @@
       if (e.type === 'list_open') {
         autoplay.files = [];
         $('body').addClass('tvt-autopick');
+
+        if (autoplay.target.movie && Array.isArray(e.items)) keepMainFiles(e.items);
       } else if (e.type === 'render') {
         autoplay.files.push({ element: e.element, item: e.item });
         clearTimeout(autoplay.timer);
@@ -1435,6 +1491,7 @@
     var _this = this;
     var movie = object.movie;
     var serial = !!(movie.original_name || movie.number_of_seasons);
+    var movie_year = parseInt((movie.release_date || '') + '', 10) || 0;
     var html = $('<div class="tvt-title"></div>');
     var head = $('<div class="tvt-title__head"><div class="tvt-title__name"></div><div class="tvt-title__meta"></div></div>');
     var body = $('<div class="tvt-title__body"></div>');
@@ -1558,9 +1615,19 @@
     }
 
     function releasesFor(n) {
-      var list = items.filter(function (it) { return !it.r.cam; });
+      var all = items;
 
-      if (!list.length) list = items.slice();
+      // Фильм: раздачи другого года («Коллекция 2002-2016» для фильма 2026) и сезоны
+      // одноимённого сериала не предлагаем
+      if (!serial) {
+        var same = items.filter(function (it) { return yearMatches(it.r, movie_year) && !it.r.seasons.length; });
+
+        if (same.length) all = same;
+      }
+
+      var list = all.filter(function (it) { return !it.r.cam; });
+
+      if (!list.length) list = all.slice();
       if (!serial) return list;
 
       var exact = list.filter(function (it) { return coversSeason(it, n); });
