@@ -7,7 +7,7 @@
   if (window.tvt_plugin_ready) return;
   window.tvt_plugin_ready = true;
 
-  var VERSION = '1.1.0';
+  var VERSION = '1.1.1';
 
   // ---------------------------------------------------------------------------
   // Разбор названия раздачи
@@ -1195,11 +1195,16 @@
   function episodeView(movie, s, e) {
     var hash = Lampa.Utils.hash([s, s > 10 ? ':' : '', e, movie.original_title].join(''));
 
-    return Lampa.Timeline.view(hash, Lampa.Timeline.link(movie, s, e));
+    return Lampa.Timeline.view(hash, timelineLink(movie, s, e));
   }
 
   function movieView(movie) {
-    return Lampa.Timeline.view(Lampa.Utils.hash(movie.original_title), Lampa.Timeline.link(movie));
+    return Lampa.Timeline.view(Lampa.Utils.hash(movie.original_title), timelineLink(movie));
+  }
+
+  // Привязки к карточке нет в некоторых сборках Lampa (например, с зеркала cflampa.mx) — там прогресс ищется только по хешу
+  function timelineLink(movie, s, e) {
+    return typeof Lampa.Timeline.link === 'function' ? Lampa.Timeline.link(movie, s, e) : null;
   }
 
   function isWatched(v) {
@@ -1341,7 +1346,8 @@
 
     el.poster = movie.img;
 
-    Lampa.Torrent.opened(function () { markViewed(el); });
+    if (Lampa.Torrent.opened) Lampa.Torrent.opened(function () { markViewed(el); });
+
     Lampa.Torrent.start(el, movie);
   }
 
@@ -1407,7 +1413,7 @@
     });
 
     // Буферизацию отменили «Назад» — Lampa вернулась в скрытое окно файлов, закрываем его как обычно
-    Lampa.Controller.listener.follow('toggle', function (e) {
+    if (Lampa.Controller.listener) Lampa.Controller.listener.follow('toggle', function (e) {
       var ap = autoplay;
 
       if (ap && ap.picked && !ap.started && e.name === 'modal') {
@@ -1781,13 +1787,17 @@
       loadSeason(n, function () {
         if (cur.season !== n) return;
 
-        cur.episode = resume && resume.season === n ? resume.episode : firstUnwatched(n);
+        try {
+          cur.episode = resume && resume.season === n ? resume.episode : firstUnwatched(n);
 
-        renderEpisodes();
-        updateDetails();
+          renderEpisodes();
+          updateDetails();
 
-        if (col === 'episodes' || col === 'details') refreshCollection(col === 'episodes' ? primaryFor('episodes') : null);
-        if (call) call();
+          if (col === 'episodes' || col === 'details') refreshCollection(col === 'episodes' ? primaryFor('episodes') : null);
+          if (call) call();
+        } catch (e) {
+          _this.fail(e);
+        }
       });
     }
 
@@ -2179,7 +2189,7 @@
       refresh_timer = setTimeout(function () { _this.refresh(); }, 300);
     }
 
-    Lampa.Timeline.listener.follow('update', onTimeline);
+    if (Lampa.Timeline.listener) Lampa.Timeline.listener.follow('update', onTimeline);
 
     // --- жизненный цикл ---
 
@@ -2228,6 +2238,28 @@
     };
 
     this.afterLoad = function () {
+      try {
+        this.build();
+      } catch (e) {
+        this.fail(e);
+      }
+    };
+
+    // Экран не собрался (например, другая версия Lampa) — не оставляем вечную загрузку, открываем список раздач
+    this.fail = function (e) {
+      if (this.failed) return;
+
+      this.failed = true;
+
+      console.error('TV Torrents', 'title screen error', e && e.stack || e);
+
+      this.activity.loader(false);
+
+      Lampa.Noty.show('Торренты TV: ошибка экрана (' + (e && e.message || e) + ') — открываю список раздач');
+      Lampa.Activity.replace({ component: 'tvt_torrents' });
+    };
+
+    this.build = function () {
       if (serial) {
         resume = resumePoint(movie);
 
@@ -2302,7 +2334,7 @@
     this.destroy = function () {
       clearTimeout(season_timer);
       clearTimeout(refresh_timer);
-      Lampa.Timeline.listener.remove('update', onTimeline);
+      if (Lampa.Timeline.listener) Lampa.Timeline.listener.remove('update', onTimeline);
       Lampa.Parser.clear && Lampa.Parser.clear();
 
       for (var name in cols) cols[name].scroll.destroy();
