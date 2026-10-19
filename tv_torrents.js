@@ -7,7 +7,7 @@
   if (window.tvt_plugin_ready) return;
   window.tvt_plugin_ready = true;
 
-  var VERSION = '1.4.0';
+  var VERSION = '1.4.1';
 
   // ---------------------------------------------------------------------------
   // Разбор названия раздачи
@@ -3153,22 +3153,29 @@
       }
     };
 
-    var fail = function (status, message) {
-      var why = status === 401 ? 'токен не подходит' :
-        status === 403 ? 'нет доступа (проверьте права токена: Contents — чтение и запись)' :
-        status === 404 ? 'репозиторий не найден' :
-        status === 0 ? 'нет связи с GitHub' : 'ошибка ' + status + (message ? ' (' + message + ')' : '');
+    var full_repo = cfg.repo;
 
-      done('ошибка — ' + why, true);
+    var fail = function (status, message) {
+      var why = status === 401 ? 'токен не подходит (проверьте, что он скопирован целиком и не истёк)' :
+        status === 403 ? 'у токена нет права записи: Permissions → Contents → Read and write' :
+        status === 404 ? 'репозиторий ' + full_repo + ' не найден или токену не дан доступ к нему: Repository access → Only select repositories → ' + full_repo.split('/').pop() :
+        status === 0 ? 'нет связи с GitHub' : 'ошибка ' + status;
+
+      done('ошибка — ' + why + (message && status !== 0 ? ' [GitHub: ' + message + ']' : ''), true);
     };
 
     syncRepo(cfg, function (repo) {
       var base = '/repos/' + repo + '/contents/' + encodeURIComponent(cfg.name);
       var own_name = cfg.device + '.json';
 
+      full_repo = repo;
+
       gh(cfg, 'GET', base, null, proceed, function (status, message) {
-        if (status === 404 && /not found/i.test(message || '')) proceed([]);
-        else fail(status, message);
+        if (status !== 404) return fail(status, message);
+
+        // 404 бывает и когда папки этого человека ещё нет, и когда репозиторий пустой
+        // («This repository is empty»). Проверяем сам репозиторий: доступен — начинаем с нуля
+        gh(cfg, 'GET', '/repos/' + repo, null, function () { proceed([]); }, fail);
       });
 
       function proceed(list) {
