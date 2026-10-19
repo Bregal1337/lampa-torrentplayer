@@ -7,7 +7,7 @@
   if (window.tvt_plugin_ready) return;
   window.tvt_plugin_ready = true;
 
-  var VERSION = '1.3.0';
+  var VERSION = '1.4.0';
 
   // ---------------------------------------------------------------------------
   // Разбор названия раздачи
@@ -1596,7 +1596,7 @@
   function startAutoplay(el, movie, target, done) {
     finishAutoplay();
 
-    autoplay = { target: target, files: [], picked: false, started: false, done: done, time: Date.now() };
+    autoplay = { target: target, movie: movie, files: [], picked: false, started: false, done: done, time: Date.now() };
 
     el.poster = movie.img;
     // TorrServer подписывает торрент по title, у результатов парсера есть только Title
@@ -1627,11 +1627,171 @@
 
     if (found) {
       ap.picked = true;
+      if (!t.movie) rememberSession(ap.movie, t, found.element.torrent_hash, ap.files);
       found.item.trigger('hover:enter');
     } else {
       finishAutoplay();
       Lampa.Noty.show(t.movie ? 'Не удалось выбрать файл — выберите вручную' : 'Серия ' + t.episode + ' не найдена в раздаче — выберите файл вручную');
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Досмотренные серии по данным TorrServer. Внешний плеер (MX) сам идёт по плейлисту
+  // и возвращает в Lampa позицию только последней серии, а если Android выгрузил
+  // Lampa — вообще ничего. TorrServer же помнит каждый файл, который плеер открыл
+  // (&play), и не забывает его даже после удаления торрента. При запуске запоминаем,
+  // что уже было отмечено, потом смотрим, какие серии плеер открыл за этот сеанс:
+  // плейлист идёт по порядку, значит всё до последней открытой серии досмотрено.
+  // ---------------------------------------------------------------------------
+
+  function tsViewed(hash, ok, fail) {
+    var url = Lampa.Torserver && Lampa.Torserver.url ? Lampa.Torserver.url() : '';
+
+    if (!url || !hash) return fail();
+
+    var net = new Lampa.Reguest();
+
+    net.timeout(5000);
+    net.silent(url + '/viewed', function (json) {
+      ok((Array.isArray(json) ? json : []).filter(function (v) { return v && v.hash === hash; }).map(function (v) { return v.file_index; }));
+    }, function () { fail(); }, JSON.stringify({ action: 'list', hash: hash }));
+  }
+
+  function sessionCard(movie) {
+    var c = {};
+
+    ['id', 'title', 'name', 'original_title', 'original_name', 'first_air_date', 'number_of_seasons'].forEach(function (k) {
+      if (typeof movie[k] !== 'undefined') c[k] = movie[k];
+    });
+
+    return c;
+  }
+
+  function rememberSession(movie, target, hash, files) {
+    if (!hash || !movie || !movie.id) return;
+
+    var map = {};
+
+    files.forEach(function (f) {
+      var el = f.element;
+
+      if (el.episode) map[el.id] = [parseInt(el.season || target.season, 10), parseInt(el.episode, 10)];
+    });
+
+    var session = { card: sessionCard(movie), s: target.season, e: target.episode, hash: hash, files: map, t: Date.now() };
+
+    // Снимок до запуска: старые отметки TorrServer к этому сеансу не относятся
+    tsViewed(hash, function (list) {
+      var all = readJson('tvt_sessions');
+
+      session.base = list;
+      all[cardKey(movie)] = session;
+
+      var keys = Object.keys(all);
+
+      if (keys.length > 30) {
+        keys.sort(function (a, b) { return (all[a].t || 0) - (all[b].t || 0); });
+        keys.slice(0, keys.length - 30).forEach(function (k) { delete all[k]; });
+      }
+
+      Lampa.Storage.set('tvt_sessions', all);
+    }, function () {});
+  }
+
+  // done(список отмеченных серий [[s, e], ...])
+  function recoverSession(key, done) {
+    var all = readJson('tvt_sessions');
+    var ses = all[key];
+
+    if (!ses || !ses.base || !ses.card) return done([]);
+
+    var pos = function (p) { return p[0] * 1000 + p[1]; };
+
+    tsViewed(ses.hash, function (list) {
+      var start = ses.s * 1000 + ses.e;
+      var last = start;
+      var marked = [];
+
+      list.forEach(function (idx) {
+        var p = ses.files[idx];
+
+        if (p && ses.base.indexOf(idx) === -1 && pos(p) > last) last = pos(p);
+      });
+
+      if (last > start) {
+        var movie = ses.card;
+        var eps = [];
+
+        for (var id in ses.files) {
+          var p = ses.files[id];
+
+          if (pos(p) >= start && pos(p) < last && !eps.some(function (x) { return pos(x) === pos(p); })) eps.push(p);
+        }
+
+        eps.sort(function (a, b) { return pos(a) - pos(b); }).forEach(function (p) {
+          var v = episodeView(movie, p[0], p[1]);
+
+          if (!isWatched(v)) {
+            v.handler(100, v.duration || 0, v.duration || 0);
+            marked.push(p);
+          }
+        });
+
+        var lp = [Math.floor(last / 1000), last % 1000];
+        var prefs = titlePrefs(movie);
+
+        if (!prefs.last || pos([prefs.last.season, prefs.last.episode]) < last) {
+          saveTitlePrefs(movie, { last: { season: lp[0], episode: lp[1], t: Date.now() } });
+        }
+
+        // Если смотреть продолжат, следующий разбор начнётся с последней открытой серии
+        ses.s = lp[0];
+        ses.e = lp[1];
+      }
+
+      ses.base = list;
+      all = readJson('tvt_sessions');
+      all[key] = ses;
+      Lampa.Storage.set('tvt_sessions', all);
+
+      done(marked);
+    }, function () { done([]); });
+  }
+
+  function markedText(marked) {
+    if (!marked.length) return '';
+
+    var by_season = {};
+
+    marked.forEach(function (p) { (by_season[p[0]] = by_season[p[0]] || []).push(p[1]); });
+
+    return 'Досмотренные в плеере серии отмечены: ' + Object.keys(by_season).map(function (s) {
+      var e = by_season[s];
+
+      return s + ' сезон ' + (e.length > 1 ? e[0] + '–' + e[e.length - 1] : e[0]);
+    }).join(', ');
+  }
+
+  // При запуске Lampa: разбираем все незакрытые сеансы (например, Lampa выгрузили посреди просмотра)
+  function recoverAllSessions() {
+    var keys = Object.keys(readJson('tvt_sessions'));
+    var total = [];
+
+    var next = function () {
+      var key = keys.shift();
+
+      if (!key) {
+        if (total.length) Lampa.Noty.show(markedText(total));
+        return;
+      }
+
+      recoverSession(key, function (marked) {
+        total = total.concat(marked);
+        next();
+      });
+    };
+
+    next();
   }
 
   function initAutoplay() {
@@ -2507,7 +2667,14 @@
           return { el: el, r: parseRelease(el) };
         });
 
-        _this.afterLoad();
+        if (!serial) return _this.afterLoad();
+
+        // Сначала досмотренное в плеере по данным TorrServer — чтобы «Продолжить» сразу указывало верно
+        recoverSession(cardKey(movie), function (marked) {
+          _this.afterLoad();
+
+          if (marked.length) Lampa.Noty.show(markedText(marked));
+        });
       }, function () {
         items = [];
         _this.afterLoad();
@@ -2679,7 +2846,7 @@
   }
 
   function syncConfig() {
-    var token = (field('tvt_sync_token', '') + '').trim();
+    var token = (Lampa.Storage.get('tvt_sync_token', '') + '').trim();
     var repo = (field('tvt_sync_repo', 'lampa-sync') + '').trim().replace(/^https?:\/\/github\.com\//i, '').replace(/\.git$/i, '').replace(/\/+$/, '');
     var name = (field('tvt_sync_name', '') + '').trim().toLowerCase().replace(/[\/\\?#%]+/g, '-');
 
@@ -3087,7 +3254,14 @@
     if (Lampa.Player && Lampa.Player.listener) Lampa.Player.listener.follow('destroy', function () { scheduleSync(3000); });
 
     // Ушли в MX/VLC или свернули Lampa — отправляем сразу, вернулись — забираем свежее
-    document.addEventListener('visibilitychange', function () { scheduleSync(document.hidden ? 0 : 3000); });
+    // и отмечаем серии, которые плеер прошёл по плейлисту
+    document.addEventListener('visibilitychange', function () {
+      scheduleSync(document.hidden ? 0 : 3000);
+
+      if (!document.hidden) setTimeout(recoverAllSessions, 2500);
+    });
+
+    setTimeout(recoverAllSessions, 5000);
 
     setInterval(function () { if (!document.hidden) scheduleSync(0); }, 10 * 60000);
 
@@ -3364,12 +3538,17 @@
       field: { name: 'Репозиторий', description: 'Приватный репозиторий на GitHub: «lampa-sync» или «владелец/lampa-sync»' }
     });
 
+    // Токен вводим всегда системной клавиатурой: в неё можно вставить текст с телефона
+    // через приложение Google TV, во встроенную клавиатуру Lampa — нет
     Lampa.SettingsApi.addParam({
       component: 'tv_torrents',
-      param: { name: 'tvt_sync_token', type: 'input', values: '', default: '', placeholder: 'github_pat_…' },
-      field: { name: 'Токен GitHub', description: 'Fine-grained токен только на этот репозиторий, права Contents: чтение и запись' },
-      // Значение Lampa подставляет уже после onRender — прячем на следующем такте
-      onRender: function (item) { setTimeout(function () { maskToken(item); }, 0); }
+      param: { name: 'tvt_sync_token_edit', type: 'button' },
+      field: { name: 'Токен GitHub', description: 'Откроется системная клавиатура. На телефоне в приложении Google TV нажмите значок клавиатуры и вставьте скопированный токен. Нужен fine-grained токен только на этот репозиторий, права Contents: чтение и запись' },
+      onRender: function (item) {
+        item.find('.settings-param__name').after('<div class="settings-param__value"></div>');
+        maskToken(item);
+      },
+      onChange: editToken
     });
 
     Lampa.SettingsApi.addParam({
@@ -3392,9 +3571,24 @@
       Lampa.Storage.set('tvt_sync_seen', {});
       Lampa.Storage.set('tvt_sync_pushed', '');
 
-      if (e.name === 'tvt_sync_token') setTimeout(function () { maskToken($('.settings-param[data-name="tvt_sync_token"]')); }, 0);
+      if (e.name === 'tvt_sync_token') maskToken($('.settings-param[data-name="tvt_sync_token_edit"]'));
 
       scheduleSync(1500);
+    });
+  }
+
+  function editToken() {
+    var enabled = Lampa.Controller.enabled().name;
+
+    Lampa.Input.edit({ title: 'Токен GitHub', value: '', free: true, nosave: true, nomic: true, keyboard: 'system' }, function (value) {
+      value = (value || '').replace(/\s+/g, '');
+
+      if (value) {
+        Lampa.Storage.set('tvt_sync_token', value);
+        Lampa.Noty.show('Токен сохранён (…' + value.slice(-4) + ')');
+      }
+
+      Lampa.Controller.toggle(enabled);
     });
   }
 
