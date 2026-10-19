@@ -7,7 +7,7 @@
   if (window.tvt_plugin_ready) return;
   window.tvt_plugin_ready = true;
 
-  var VERSION = '1.1.2';
+  var VERSION = '1.2.0';
 
   // ---------------------------------------------------------------------------
   // Разбор названия раздачи
@@ -607,6 +607,207 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Поиск раздач сразу в нескольких источниках: парсер из настроек Lampa,
+  // поиск TorrServer (rutor) и свои Jackett/JacRed. Дубли склеиваются по хешу.
+  // ---------------------------------------------------------------------------
+
+  var MAIN_SOURCE = 'Парсер';
+  var search_nets = [];
+
+  function btih(el) {
+    var m = /btih:([0-9a-z]{32,40})/i.exec(el.MagnetUri || el.Link || '');
+
+    return m ? m[1].toLowerCase() : '';
+  }
+
+  // «http://192.168.1.5:9117|ключ, jac.example.org» → [{url, key, name}]
+  function extraSources() {
+    return (field('tvt_src_extra', '') + '').split(/[\s,;]+/).filter(Boolean).map(function (s) {
+      var parts = s.split('|');
+      var url = parts[0].replace(/\/+$/, '');
+
+      if (!/^https?:\/\//i.test(url)) url = 'http://' + url;
+
+      return { url: url, key: parts[1] || '', name: url.replace(/^https?:\/\//i, '') };
+    });
+  }
+
+  function newNet() {
+    var net = new Lampa.Reguest();
+
+    net.timeout(1000 * (parseInt(field('parse_timeout', 15), 10) || 15));
+    search_nets.push(net);
+
+    return net;
+  }
+
+  function netGet(url, ok, err) {
+    var net = newNet();
+
+    if (net['native']) net['native'](url, ok, err);
+    else net.silent(url, ok, err);
+  }
+
+  // Тот же запрос, что делает Lampa к Jackett/JacRed
+  function jackettSearch(src, object, ok, err) {
+    var movie = object.movie || {};
+    var enc = encodeURIComponent;
+    var u = src.url + '/api/v2.0/indexers/all/results?apikey=' + enc(src.key) + '&Query=' + enc(object.search || movie.title || movie.name || '');
+
+    if (movie.id && !object.from_search) {
+      var year = ((movie.first_air_date || movie.release_date || '0000') + '').slice(0, 4);
+
+      if (!object.clarification) u += '&title=' + enc(movie.title || movie.name || '') + '&title_original=' + enc(movie.original_title || movie.original_name || '');
+
+      u += '&year=' + enc(year) + '&is_serial=' + (movie.original_name ? 2 : 1);
+      u += '&genres=' + enc((movie.genres || []).map(function (g) { return g.name; }).join(','));
+      u += '&Category[]=' + (movie.number_of_seasons > 0 || movie.original_name ? 5000 : 2000);
+    }
+
+    netGet(u, function (json) {
+      if (json && Array.isArray(json.Results)) ok(json.Results);
+      else err('неверный ответ');
+    }, function () { err('нет ответа'); });
+  }
+
+  function sameTitle(title, movie) {
+    var norm = function (s) { return (s || '').toLowerCase().replace(/ё/g, 'е').replace(/[^a-zа-я0-9]+/g, ' ').trim(); };
+    var t = ' ' + norm(title) + ' ';
+
+    return [movie.title, movie.name, movie.original_title, movie.original_name].some(function (n) {
+      n = norm(n);
+
+      return n && t.indexOf(' ' + n + ' ') >= 0;
+    });
+  }
+
+  // Встроенный поиск TorrServer (rutor). Работает, если он включён в настройках TorrServer
+  function torrserverSearch(object, ok, err) {
+    var movie = object.movie || {};
+    var query = object.search_one || movie.title || movie.name || object.search || '';
+
+    netGet(Lampa.Torserver.url() + '/search/?query=' + encodeURIComponent(query), function (json) {
+      if (!Array.isArray(json)) return err('поиск выключен');
+
+      ok(json.filter(function (e) { return !movie.id || sameTitle(e.Title, movie); }).map(function (e) {
+        return {
+          Title: e.Title,
+          Tracker: e.Tracker || 'rutor',
+          Size: Lampa.Utils.sizeToBytes ? Lampa.Utils.sizeToBytes(e.Size) : parseInt(e.Size, 10) || 0,
+          PublishDate: e.CreateDate,
+          Seeders: parseInt(e.Seed, 10) || 0,
+          Peers: parseInt(e.Peer, 10) || 0,
+          MagnetUri: e.Magnet || (/^magnet:/i.test(e.Link || '') ? e.Link : ''),
+          Link: e.Link
+        };
+      }).filter(function (el) { return el.MagnetUri || el.Link; }));
+    }, function () { err('поиск выключен'); });
+  }
+
+  function mergeResults(lists) {
+    var map = {};
+    var out = [];
+
+    lists.forEach(function (src) {
+      if (!src) return;
+
+      src.items.forEach(function (el) {
+        var key = btih(el) || (el.Title + '|' + el.Size);
+        var ex = map[key];
+
+        if (!ex) {
+          el.tvt_src = [src.name];
+          map[key] = el;
+          out.push(el);
+          return;
+        }
+
+        if (ex.tvt_src.indexOf(src.name) === -1) ex.tvt_src.push(src.name);
+        if (!ex.ffprobe && el.ffprobe) ex.ffprobe = el.ffprobe;
+        if (!ex.info && el.info) ex.info = el.info;
+
+        ex.Seeders = Math.max(parseInt(ex.Seeders, 10) || 0, parseInt(el.Seeders, 10) || 0);
+        ex.Peers = Math.max(parseInt(ex.Peers, 10) || 0, parseInt(el.Peers, 10) || 0);
+
+        var tr = trackers(ex.Tracker);
+
+        trackers(el.Tracker).forEach(function (t) { addUnique(tr, t); });
+        ex.Tracker = tr.join(', ');
+      });
+    });
+
+    return out;
+  }
+
+  // ok({Results}) — когда ответили все источники (или вышло время); fail — если не ответил ни один
+  function searchReleases(object, ok, fail) {
+    var tasks = [{ name: MAIN_SOURCE, run: function (done, err) {
+      Lampa.Parser.get(object, function (data) { done(data && data.Results || []); }, err);
+    } }];
+
+    if (field('tvt_src_torrserver', false) && Lampa.Torserver && Lampa.Torserver.url()) {
+      tasks.push({ name: 'TorrServer', run: function (done, err) { torrserverSearch(object, done, err); } });
+    }
+
+    extraSources().forEach(function (s) {
+      tasks.push({ name: s.name, run: function (done, err) { jackettSearch(s, object, done, err); } });
+    });
+
+    var results = [];
+    var failed = [];
+    var left = tasks.length;
+    var finished = false;
+    var timer;
+
+    function finish() {
+      if (finished) return;
+
+      finished = true;
+      clearTimeout(timer);
+
+      var merged = mergeResults(results);
+
+      if (!merged.length && failed.length === tasks.length) return fail(failed.join(', '));
+      if (failed.length && tasks.length > 1) Lampa.Noty.show('Не ответили: ' + failed.join(', '));
+
+      ok({ Results: merged });
+    }
+
+    tasks.forEach(function (t, i) {
+      var settled = false;
+
+      t.run(function (list) {
+        if (settled) return;
+        settled = true;
+        results[i] = { name: t.name, items: list || [] };
+        if (--left === 0) finish();
+      }, function () {
+        if (settled) return;
+        settled = true;
+        failed.push(t.name);
+        if (--left === 0) finish();
+      });
+    });
+
+    // Медленный источник не держит экран: отдаём то, что успело прийти
+    timer = setTimeout(finish, 1000 * ((parseInt(field('parse_timeout', 15), 10) || 15) + 5));
+  }
+
+  function clearSearch() {
+    search_nets.forEach(function (n) { n.clear(); });
+    search_nets = [];
+
+    if (Lampa.Parser.clear) Lampa.Parser.clear();
+  }
+
+  // «⊕ TorrServer, jackett.local» — откуда ещё пришла раздача, кроме основного парсера
+  function sourceText(el) {
+    var other = (el.tvt_src || []).filter(function (s) { return s !== MAIN_SOURCE; });
+
+    return other.length ? '⊕ ' + other.join(', ') : '';
+  }
+
+  // ---------------------------------------------------------------------------
   // Экран торрентов
   // ---------------------------------------------------------------------------
 
@@ -663,7 +864,7 @@
     this.initialize = function () {
       this.activity.loader(true);
 
-      Lampa.Parser.get(object, function (data) {
+      searchReleases(object, function (data) {
         var results = data && data.Results ? data.Results : [];
 
         items = results.map(function (el) {
@@ -1008,7 +1209,7 @@
 
       // Битрейт считаем только для фильмов: у сериала ffprobe описывает одну серию, а размер — всю раздачу
       var bitrate = !is_serial && r.duration > 600 && el.Size ? (el.Size * 8 / r.duration / 1000000) : 0;
-      var meta = [trackerText(el.Tracker), dateText(el.PublishDate), r.episodes, bitrate ? bitrate.toFixed(1) + ' Мбит/с' : ''].filter(Boolean).join('  ·  ');
+      var meta = [trackerText(el.Tracker), sourceText(el), dateText(el.PublishDate), r.episodes, bitrate ? bitrate.toFixed(1) + ' Мбит/с' : ''].filter(Boolean).join('  ·  ');
 
       item.find('.tvt-item__meta').text(meta);
       item.find('.tvt-item__seeds').addClass('tvt-seeds--' + seedsClass(seeds)).text('▲ ' + seeds);
@@ -1208,7 +1409,7 @@
     this.stop = function () {};
 
     this.destroy = function () {
-      Lampa.Parser.clear && Lampa.Parser.clear();
+      clearSearch();
       scroll.destroy();
       html.remove();
       items = filtered = [];
@@ -1903,7 +2104,7 @@
 
       list.forEach(function (ep) {
         var e = ep.episode_number;
-        var el = $('<div class="tvt-ep selector"><div class="tvt-ep__img"><img /><div class="tvt-ep__num"></div><div class="tvt-bar"><div></div></div></div><div class="tvt-ep__body"><div class="tvt-ep__name"></div><div class="tvt-ep__meta"></div></div><div class="tvt-ep__state"></div></div>');
+        var el = $('<div class="tvt-ep selector"><div class="tvt-ep__img"><img /><div class="tvt-ep__num"></div><div class="tvt-ep__go">▶</div><div class="tvt-bar"><div></div></div></div><div class="tvt-ep__body"><div class="tvt-ep__name"></div><div class="tvt-ep__meta"></div></div><div class="tvt-ep__state"></div></div>');
 
         if (ep.still_path) el.find('img').attr('src', Lampa.Api.img(ep.still_path, 'w300'));
         else el.find('.tvt-ep__img').addClass('empty');
@@ -1917,14 +2118,23 @@
         fillEpisode(el, e, ep);
         bindFocus(el, 'episodes');
 
+        var choose = function () {
+          if (cur.episode === e) return false;
+
+          cur.episode = e;
+          c.el.find('.tvt-ep').removeClass('active');
+          el.addClass('active');
+          updateDetails();
+
+          return true;
+        };
+
         el.on('hover:focus', function () {
-          if (cur.episode !== e) {
-            cur.episode = e;
-            c.el.find('.tvt-ep').removeClass('active');
-            el.addClass('active');
-            updateDetails();
-          }
+          if (!touchMode()) choose();
         }).on('hover:enter', function () {
+          // На телефоне фокуса нет: первое касание выбирает серию (видно озвучку и раздачу), второе — запускает
+          if (touchMode() && choose()) return;
+
           cur.episode = e;
           _this.play(false);
         }).on('hover:long', function () {
@@ -2128,7 +2338,7 @@
         var r = it.r;
         var el = it.el;
         var line1 = [r.res + (r.hdr ? ' ' + r.hdr : ''), r.source, r.codec, r.channels, r.seasons.length > 1 ? 'Сезоны ' + r.seasons[0] + '–' + r.seasons[r.seasons.length - 1] : '', r.episodes].filter(Boolean).join(' · ');
-        var line2 = [sizeText(el.Size), '▲ ' + (parseInt(el.Seeders, 10) || 0), trackerText(el.Tracker), dateText(el.PublishDate)].filter(Boolean).join(' · ');
+        var line2 = [sizeText(el.Size), '▲ ' + (parseInt(el.Seeders, 10) || 0), trackerText(el.Tracker), sourceText(el), dateText(el.PublishDate)].filter(Boolean).join(' · ');
 
         det.rel.empty().append($('<div class="tvt-det__rel1"></div>').text(line1)).append($('<div class="tvt-det__rel2"></div>').text(line2));
         det.tracks.text(r.tracks.length ? 'Дорожки: ' + r.tracks.slice(0, 6).join(', ') + (r.tracks.length > 6 ? ' +' + (r.tracks.length - 6) : '') : (r.types.map(function (t) { return TYPE_LABELS[t]; }).concat(r.studios.slice(0, 4))).join(', '));
@@ -2176,7 +2386,7 @@
 
           return {
             title: it.el.Title,
-            subtitle: [r.res + (r.hdr ? ' ' + r.hdr : ''), sizeText(it.el.Size), '▲ ' + (parseInt(it.el.Seeders, 10) || 0), trackerText(it.el.Tracker)].join(' · '),
+            subtitle: [r.res + (r.hdr ? ' ' + r.hdr : ''), sizeText(it.el.Size), '▲ ' + (parseInt(it.el.Seeders, 10) || 0), trackerText(it.el.Tracker), sourceText(it.el)].filter(Boolean).join(' · '),
             key: releaseKey(it),
             selected: it === pick.release
           };
@@ -2291,7 +2501,7 @@
         cols.info.scroll.append(info);
       }
 
-      Lampa.Parser.get(object, function (data) {
+      searchReleases(object, function (data) {
         items = (data && data.Results ? data.Results : []).map(function (el) {
           return { el: el, r: parseRelease(el) };
         });
@@ -2402,7 +2612,7 @@
       clearTimeout(season_timer);
       clearTimeout(refresh_timer);
       if (Lampa.Timeline.listener) Lampa.Timeline.listener.remove('update', onTimeline);
-      Lampa.Parser.clear && Lampa.Parser.clear();
+      clearSearch();
 
       for (var name in cols) cols[name].scroll.destroy();
 
@@ -2553,6 +2763,37 @@
     '.tvt-info__poster{width:55%;border-radius:0.8em;overflow:hidden}',
     '.tvt-info__poster img{width:100%;display:block}',
     '.tvt-info__text{font-size:1.15em;line-height:1.4;opacity:0.85;margin-top:0.8em}',
+    '.tvt-ep__go{display:none;position:absolute;top:50%;left:50%;width:2.2em;height:2.2em;margin:-1.1em 0 0 -1.1em;border-radius:50%;background:rgba(0,0,0,0.65);align-items:center;justify-content:center;font-size:1.2em}',
+    'body.touch-device .tvt-ep.active .tvt-ep__go{display:flex}',
+
+    // Телефон: одна страница со скроллом — сезоны лентой, под ними кнопки и выбор озвучки, ниже список серий
+    'body.tvt-narrow .tvt-title{display:block;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;padding:0 1em 9em}',
+    'body.tvt-narrow .tvt-title__name{white-space:normal;font-size:1.8em}',
+    'body.tvt-narrow .tvt-title__body{display:flex;flex-direction:column}',
+    'body.tvt-narrow .tvt-col{width:auto !important;height:auto !important;margin:0 0 0.8em 0 !important;flex-shrink:0}',
+    'body.tvt-narrow .tvt-col > .scroll{height:auto !important;overflow:visible !important;-webkit-mask-image:none !important;mask-image:none !important}',
+    'body.tvt-narrow .tvt-col .scroll__content{padding:0 !important}',
+    'body.tvt-narrow .tvt-col .scroll__body{transform:none !important}',
+    'body.tvt-narrow .tvt-col .scroll__body:after{display:none !important}',
+    'body.tvt-narrow .tvt-col--seasons{order:1}',
+    'body.tvt-narrow .tvt-col--details{order:2}',
+    'body.tvt-narrow .tvt-col--episodes,body.tvt-narrow .tvt-col--info{order:3}',
+    'body.tvt-narrow .tvt-col--seasons > .scroll{overflow-x:auto !important;overflow-y:hidden !important}',
+    'body.tvt-narrow .tvt-col--seasons .scroll__body{display:flex;flex-wrap:nowrap}',
+    'body.tvt-narrow .tvt-season{flex:0 0 auto;width:10.5em;margin:0 0.5em 0 0;padding:0.4em}',
+    'body.tvt-narrow .tvt-season__img{width:2.8em;height:4.1em;margin-right:0.5em}',
+    'body.tvt-narrow .tvt-season__name{font-size:1.15em}',
+    'body.tvt-narrow .tvt-det__img{width:42%;padding-top:23.6%}',
+    'body.tvt-narrow .tvt-det__text{-webkit-line-clamp:3}',
+    'body.tvt-narrow .tvt-ep__img{width:7.6em;height:4.3em}',
+    'body.tvt-narrow .tvt-info__poster{display:none}',
+    'body.tvt-narrow .tvt-info__text{margin-top:0}',
+    // Список раздач на телефоне: подписи строк над кнопками, а не сбоку
+    'body.tvt-narrow .tvt{padding:0 1em 9em}',
+    'body.tvt-narrow .tvt-row{display:block}',
+    'body.tvt-narrow .tvt-row__label{width:auto;padding:0.3em 0 0.1em}',
+    'body.tvt-narrow .tvt-item__q{width:4em}',
+    'body.tvt-narrow .tvt-item__side{min-width:4em}',
 
     // Автозапуск серии: окно файлов TorrServer прячем, пока Lampa запускает нужный файл
     'body.tvt-autopick .modal{opacity:0;pointer-events:none}',
@@ -2634,6 +2875,18 @@
 
     Lampa.SettingsApi.addParam({
       component: 'tv_torrents',
+      param: { name: 'tvt_src_extra', type: 'input', values: '', default: '', placeholder: 'http://192.168.1.5:9117|ключ' },
+      field: { name: 'Дополнительные источники', description: 'Адреса Jackett или JacRed через запятую, ключ API — после «|». Ищутся вместе с парсером Lampa, одинаковые раздачи склеиваются' }
+    });
+
+    Lampa.SettingsApi.addParam({
+      component: 'tv_torrents',
+      param: { name: 'tvt_src_torrserver', type: 'trigger', default: false },
+      field: { name: 'Искать и через TorrServer (rutor)', description: 'Нужен включённый поиск rutor в настройках TorrServer. Он держит базу rutor в памяти (+300–400 МБ), на ТВ с 2 ГБ не включайте' }
+    });
+
+    Lampa.SettingsApi.addParam({
+      component: 'tv_torrents',
       param: { name: 'tvt_reset_studios', type: 'button' },
       field: { name: 'Забыть любимые озвучки', description: 'Озвучки, которые вы выбирали, поднимаются выше в умной сортировке' },
       onChange: function () {
@@ -2641,6 +2894,20 @@
         Lampa.Noty.show('Список любимых озвучек очищен');
       }
     });
+  }
+
+  // Телефон в портрете: колонки экрана сериала встают друг под другом
+  function initNarrow() {
+    var update = function () {
+      $('body').toggleClass('tvt-narrow', window.innerWidth < 760 || window.innerWidth < window.innerHeight);
+    };
+
+    update();
+    $(window).on('resize orientationchange', update);
+  }
+
+  function touchMode() {
+    return $('body').hasClass('touch-device');
   }
 
   function start() {
@@ -2659,6 +2926,7 @@
     applyReplace();
     initEpisodeGrid();
     initAutoplay();
+    initNarrow();
 
     console.log('TV Torrents', 'started', VERSION);
   }
