@@ -7,7 +7,7 @@
   if (window.tvt_plugin_ready) return;
   window.tvt_plugin_ready = true;
 
-  var VERSION = '1.2.0';
+  var VERSION = '1.3.0';
 
   // ---------------------------------------------------------------------------
   // Разбор названия раздачи
@@ -1506,6 +1506,7 @@
     }
 
     Lampa.Storage.set('tvt_titles', all);
+    scheduleSync(30000);
   }
 
   function realSeasons(movie) {
@@ -2646,6 +2647,454 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Синхронизация через приватный репозиторий GitHub: прогресс и отметки
+  // просмотра, закладки Lampa, выбор озвучки/раздачи и последняя серия.
+  // В репозитории папка на человека, в ней файл на каждое устройство:
+  // устройство пишет только свой файл, читает все и берёт самое свежее.
+  // ---------------------------------------------------------------------------
+
+  var SYNC_CATS = ['like', 'wath', 'book', 'history', 'look', 'viewed', 'scheduled', 'continued', 'thrown'];
+  var SYNC_MAX_VIEWS = 3000;
+  var sync = { running: false, again: false, timer: null, due: 0, applying: false };
+
+  function readJson(name) {
+    var v = Lampa.Storage.get(name, '{}');
+
+    if (typeof v === 'string') {
+      try { v = JSON.parse(v); } catch (e) { v = {}; }
+    }
+
+    return v && typeof v === 'object' ? v : {};
+  }
+
+  function syncDevice() {
+    var id = Lampa.Storage.get('tvt_sync_device', '');
+
+    if (!id) {
+      id = ((Lampa.Platform.get && Lampa.Platform.get()) || 'device').replace(/[^a-z0-9]+/gi, '').toLowerCase() + '-' + Math.random().toString(36).slice(2, 7);
+      Lampa.Storage.set('tvt_sync_device', id);
+    }
+
+    return id;
+  }
+
+  function syncConfig() {
+    var token = (field('tvt_sync_token', '') + '').trim();
+    var repo = (field('tvt_sync_repo', 'lampa-sync') + '').trim().replace(/^https?:\/\/github\.com\//i, '').replace(/\.git$/i, '').replace(/\/+$/, '');
+    var name = (field('tvt_sync_name', '') + '').trim().toLowerCase().replace(/[\/\\?#%]+/g, '-');
+
+    if (!token || !repo || !name) return null;
+
+    return { token: token, repo: repo, name: name, device: syncDevice(), api: Lampa.Storage.get('tvt_sync_api', '') || 'https://api.github.com' };
+  }
+
+  // GitHub API отвечает на запросы из браузера (CORS), поэтому обычный XHR — нужны PUT и заголовки
+  function gh(cfg, method, path, body, ok, fail) {
+    var xhr = new XMLHttpRequest();
+    var url = cfg.api + path;
+
+    if (method === 'GET') url += (url.indexOf('?') >= 0 ? '&' : '?') + '_=' + Date.now();
+
+    xhr.open(method, url, true);
+    xhr.timeout = 20000;
+    xhr.setRequestHeader('Authorization', 'Bearer ' + cfg.token);
+    xhr.setRequestHeader('Accept', 'application/vnd.github+json');
+    if (body) xhr.setRequestHeader('Content-Type', 'application/json');
+
+    xhr.onload = function () {
+      var json = null;
+
+      try { json = xhr.responseText ? JSON.parse(xhr.responseText) : null; } catch (e) {}
+
+      if (xhr.status >= 200 && xhr.status < 300) ok(json);
+      else fail(xhr.status, json && json.message || '');
+    };
+    xhr.onerror = xhr.ontimeout = function () { fail(0, 'нет связи'); };
+    xhr.send(body ? JSON.stringify(body) : null);
+  }
+
+  // «lampa-sync» → «владелец/lampa-sync» (владелец — хозяин токена)
+  function syncRepo(cfg, ok, fail) {
+    if (cfg.repo.indexOf('/') > 0) return ok(cfg.repo);
+
+    var owner = Lampa.Storage.get('tvt_sync_owner', '');
+
+    if (owner) return ok(owner + '/' + cfg.repo);
+
+    gh(cfg, 'GET', '/user', null, function (u) {
+      Lampa.Storage.set('tvt_sync_owner', u.login);
+      ok(u.login + '/' + cfg.repo);
+    }, fail);
+  }
+
+  function b64encode(str) {
+    return btoa(unescape(encodeURIComponent(str)));
+  }
+
+  function b64decode(b64) {
+    return decodeURIComponent(escape(atob((b64 || '').replace(/\s/g, ''))));
+  }
+
+  function timelineName() {
+    return Lampa.Timeline.filename ? Lampa.Timeline.filename() : 'file_view';
+  }
+
+  // Прогресс Lampa: {hash: {percent, time, duration, updated}} → {hash: {p, t, d, u}}
+  function localViews() {
+    var all = readJson(timelineName());
+    var out = {};
+
+    for (var h in all) {
+      var r = all[h];
+
+      if (r && typeof r === 'object' && (r.percent || r.time || r.updated)) out[h] = { p: r.percent || 0, t: r.time || 0, d: r.duration || 0, u: r.updated || 0 };
+    }
+
+    return out;
+  }
+
+  // Закладки без отметок времени, поэтому ведём журнал: что добавилось или пропало с прошлого раза
+  function trackMarks() {
+    var fav = Lampa.Favorite.full ? Lampa.Favorite.full() : null;
+    var journal = readJson('tvt_sync_marks');
+    var first = !journal.__init;
+    var now = Date.now();
+    var seen = {};
+
+    if (!fav) return journal;
+
+    SYNC_CATS.forEach(function (cat) {
+      (fav[cat] || []).forEach(function (id) {
+        var k = cat + ':' + id;
+        var j = journal[k];
+
+        seen[k] = true;
+
+        // То, что лежало до первой синхронизации, считаем старым: свежие удаления с других устройств важнее
+        if (!j || !j.on) journal[k] = { on: 1, t: first ? 1 : now };
+      });
+    });
+
+    for (var k in journal) {
+      if (k !== '__init' && journal[k].on && !seen[k]) journal[k] = { on: 0, t: now };
+    }
+
+    journal.__init = 1;
+    Lampa.Storage.set('tvt_sync_marks', journal);
+
+    return journal;
+  }
+
+  function localState() {
+    var journal = trackMarks();
+    var fav = Lampa.Favorite.full ? Lampa.Favorite.full() : { card: [] };
+    var cards = {};
+    var marks = {};
+
+    (fav.card || []).forEach(function (c) { cards[c.id] = c; });
+
+    for (var k in journal) {
+      if (k === '__init') continue;
+
+      marks[k] = journal[k];
+    }
+
+    return { views: localViews(), marks: marks, cards: cards, titles: readTitles() };
+  }
+
+  // Самое свежее по каждой записи: прогресс — по updated, закладки и выбор озвучки — по t
+  function mergeStates(list) {
+    var out = { views: {}, marks: {}, cards: {}, titles: {} };
+
+    list.forEach(function (s) {
+      if (!s) return;
+
+      var k;
+
+      for (k in s.views || {}) if (!out.views[k] || (s.views[k].u || 0) > (out.views[k].u || 0)) out.views[k] = s.views[k];
+      for (k in s.marks || {}) if (!out.marks[k] || (s.marks[k].t || 0) > (out.marks[k].t || 0)) out.marks[k] = s.marks[k];
+      for (k in s.titles || {}) if (!out.titles[k] || (s.titles[k].t || 0) > (out.titles[k].t || 0)) out.titles[k] = s.titles[k];
+      for (k in s.cards || {}) out.cards[k] = s.cards[k];
+    });
+
+    return out;
+  }
+
+  // Применяем к Lampa то, что на других устройствах новее. Возвращает число изменений
+  function applyState(merged, local) {
+    var changed = 0;
+    var k;
+
+    // Прогресс: пачкой прямо в хранилище и одно перечитывание, иначе первый вход на ТВ тормозит
+    var raw = readJson(timelineName());
+    var view_changes = [];
+
+    for (k in merged.views) {
+      var m = merged.views[k];
+      var l = local.views[k];
+
+      if (!l || (m.u || 0) > (l.u || 0)) view_changes.push(k);
+    }
+
+    if (view_changes.length) {
+      if (view_changes.length <= 15) {
+        view_changes.forEach(function (h) {
+          var v = merged.views[h];
+
+          Lampa.Timeline.update({ hash: h, percent: v.p, time: v.t, duration: v.d, updated: v.u, received: true });
+        });
+      } else {
+        view_changes.forEach(function (h) {
+          var v = merged.views[h];
+          var road = raw[h] && typeof raw[h] === 'object' ? raw[h] : { profile: 0 };
+
+          road.percent = v.p;
+          road.time = v.t;
+          road.duration = v.d;
+          road.updated = v.u;
+          raw[h] = road;
+        });
+
+        Lampa.Storage.set(timelineName(), raw);
+        if (Lampa.Timeline.read) Lampa.Timeline.read();
+        if (Lampa.Timeline.listener) Lampa.Timeline.listener.send('update', { data: {} });
+      }
+
+      changed += view_changes.length;
+    }
+
+    // Закладки: добавления по возрастанию времени, чтобы свежие оказались сверху
+    var adds = [];
+    var removes = [];
+    var journal = readJson('tvt_sync_marks');
+
+    for (k in merged.marks) {
+      var mk = merged.marks[k];
+      var lk = local.marks[k];
+
+      if (lk && (lk.t || 0) >= (mk.t || 0)) continue;
+
+      var parts = k.split(':');
+      var cat = parts[0];
+      var id = parts.slice(1).join(':');
+      var has = lk && lk.on;
+
+      if (SYNC_CATS.indexOf(cat) === -1) continue;
+
+      if (mk.on && !has) {
+        if (merged.cards[id]) adds.push({ cat: cat, card: merged.cards[id], t: mk.t });
+        else continue;
+      } else if (!mk.on && has) {
+        removes.push({ cat: cat, id: id });
+      }
+
+      journal[k] = { on: mk.on, t: mk.t };
+    }
+
+    if (adds.length || removes.length) {
+      sync.applying = true;
+
+      try {
+        removes.forEach(function (r) { Lampa.Favorite.remove(r.cat, { id: isNaN(r.id) ? r.id : +r.id }); });
+        adds.sort(function (a, b) { return a.t - b.t; }).forEach(function (a) { Lampa.Favorite.add(a.cat, a.card); });
+      } finally {
+        sync.applying = false;
+      }
+
+      changed += adds.length + removes.length;
+    }
+
+    journal.__init = 1;
+    Lampa.Storage.set('tvt_sync_marks', journal);
+
+    // Выбор озвучки, качества, раздачи и последняя серия
+    var titles = readTitles();
+    var titles_changed = false;
+
+    for (k in merged.titles) {
+      if (!titles[k] || (merged.titles[k].t || 0) > (titles[k].t || 0)) {
+        titles[k] = merged.titles[k];
+        titles_changed = true;
+      }
+    }
+
+    if (titles_changed) Lampa.Storage.set('tvt_titles', titles);
+
+    return changed;
+  }
+
+  // Файл устройства: всё известное ему состояние (карточки — только для действующих закладок)
+  function deviceFile(cfg, merged) {
+    var views = {};
+    var keys = Object.keys(merged.views);
+
+    if (keys.length > SYNC_MAX_VIEWS) {
+      keys.sort(function (a, b) { return (merged.views[b].u || 0) - (merged.views[a].u || 0); });
+      keys = keys.slice(0, SYNC_MAX_VIEWS);
+    }
+
+    keys.forEach(function (h) { views[h] = merged.views[h]; });
+
+    var cards = {};
+
+    for (var k in merged.marks) {
+      if (!merged.marks[k].on) continue;
+
+      var id = k.split(':').slice(1).join(':');
+
+      if (merged.cards[id]) cards[id] = merged.cards[id];
+    }
+
+    return { v: 1, device: cfg.device, name: cfg.name, views: views, marks: merged.marks, cards: cards, titles: merged.titles };
+  }
+
+  function syncStatus(text) {
+    Lampa.Storage.set('tvt_sync_status', text);
+    $('.tvt-sync-status').text(syncStatusText());
+  }
+
+  function clock() {
+    var d = new Date();
+    var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+
+    return pad(d.getDate()) + '.' + pad(d.getMonth() + 1) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
+
+  function runSync(manual, retry) {
+    var cfg = syncConfig();
+
+    if (!cfg) {
+      if (manual) Lampa.Noty.show('Синхронизация: укажите имя, репозиторий и токен');
+      return;
+    }
+
+    if (sync.running) {
+      sync.again = true;
+      return;
+    }
+
+    sync.running = true;
+
+    var done = function (text, error) {
+      sync.running = false;
+      syncStatus(text);
+
+      if (manual || error) Lampa.Noty.show('Синхронизация: ' + text);
+      if (sync.again) {
+        sync.again = false;
+        scheduleSync(2000);
+      }
+    };
+
+    var fail = function (status, message) {
+      var why = status === 401 ? 'токен не подходит' :
+        status === 403 ? 'нет доступа (проверьте права токена: Contents — чтение и запись)' :
+        status === 404 ? 'репозиторий не найден' :
+        status === 0 ? 'нет связи с GitHub' : 'ошибка ' + status + (message ? ' (' + message + ')' : '');
+
+      done('ошибка — ' + why, true);
+    };
+
+    syncRepo(cfg, function (repo) {
+      var base = '/repos/' + repo + '/contents/' + encodeURIComponent(cfg.name);
+      var own_name = cfg.device + '.json';
+
+      gh(cfg, 'GET', base, null, proceed, function (status, message) {
+        if (status === 404 && /not found/i.test(message || '')) proceed([]);
+        else fail(status, message);
+      });
+
+      function proceed(list) {
+        var files = (Array.isArray(list) ? list : []).filter(function (f) { return f.type === 'file' && /\.json$/.test(f.name); });
+        var seen = readJson('tvt_sync_seen');
+        var own_sha = null;
+        var remote = [];
+
+        files.forEach(function (f) { if (f.name === own_name) own_sha = f.sha; });
+
+        var queue = files.filter(function (f) { return f.name !== own_name && seen[f.path] !== f.sha; });
+
+        var next = function () {
+          var f = queue.shift();
+
+          if (!f) return finish();
+
+          gh(cfg, 'GET', base + '/' + encodeURIComponent(f.name), null, function (json) {
+            try {
+              remote.push(JSON.parse(b64decode(json.content)));
+              seen[f.path] = f.sha;
+            } catch (e) {
+              console.warn('TV Torrents', 'sync: bad file', f.path, e);
+            }
+
+            next();
+          }, fail);
+        };
+
+        var finish = function () {
+          var local = localState();
+          var merged = mergeStates([local].concat(remote));
+          var got = applyState(merged, local);
+          var content = JSON.stringify(deviceFile(cfg, mergeStates([localState()].concat([merged]))));
+          var hash = String(Lampa.Utils.hash ? Lampa.Utils.hash(content) : content.length + ':' + content.slice(-64));
+
+          var saved = function () {
+            Lampa.Storage.set('tvt_sync_seen', seen);
+            Lampa.Storage.set('tvt_sync_pushed', hash);
+            done(clock() + (got ? ', получено изменений: ' + got : ', всё совпадает'));
+          };
+
+          // Ничего не поменялось — коммит не делаем
+          if (own_sha && String(Lampa.Storage.get('tvt_sync_pushed', '')) === hash) return saved();
+
+          var body = { message: cfg.name + ' / ' + cfg.device, content: b64encode(content) };
+
+          if (own_sha) body.sha = own_sha;
+
+          gh(cfg, 'PUT', base + '/' + encodeURIComponent(own_name), body, saved, function (status, message) {
+            // Файл успели поменять (например, после сброса данных Lampa на этом же устройстве) — повторяем один раз
+            if ((status === 409 || status === 422) && !retry) {
+              sync.running = false;
+              runSync(manual, true);
+            } else fail(status, message);
+          });
+        };
+
+        next();
+      }
+    }, fail);
+  }
+
+  function scheduleSync(ms) {
+    if (!syncConfig()) return;
+
+    var due = Date.now() + ms;
+
+    if (sync.timer && sync.due <= due) return;
+
+    clearTimeout(sync.timer);
+    sync.due = due;
+    sync.timer = setTimeout(function () {
+      sync.timer = null;
+      runSync(false);
+    }, ms);
+  }
+
+  function initSync() {
+    // Изменения отправляем с задержкой: закладки — быстро, прогресс встроенного плеера — не чаще раза в 1,5 минуты
+    if (Lampa.Timeline.listener) Lampa.Timeline.listener.follow('update', function () { scheduleSync(90000); });
+    if (Lampa.Favorite.listener) Lampa.Favorite.listener.follow('add,added,remove', function () { if (!sync.applying) scheduleSync(5000); });
+    if (Lampa.Player && Lampa.Player.listener) Lampa.Player.listener.follow('destroy', function () { scheduleSync(3000); });
+
+    // Ушли в MX/VLC или свернули Lampa — отправляем сразу, вернулись — забираем свежее
+    document.addEventListener('visibilitychange', function () { scheduleSync(document.hidden ? 0 : 3000); });
+
+    setInterval(function () { if (!document.hidden) scheduleSync(0); }, 10 * 60000);
+
+    scheduleSync(4000);
+  }
+
+  // ---------------------------------------------------------------------------
   // Стили
   // ---------------------------------------------------------------------------
 
@@ -2894,6 +3343,72 @@
         Lampa.Noty.show('Список любимых озвучек очищен');
       }
     });
+
+    // --- синхронизация ---
+
+    Lampa.SettingsApi.addParam({
+      component: 'tv_torrents',
+      param: { name: 'tvt_sync_title', type: 'title' },
+      field: { name: 'Синхронизация через GitHub' }
+    });
+
+    Lampa.SettingsApi.addParam({
+      component: 'tv_torrents',
+      param: { name: 'tvt_sync_name', type: 'input', values: '', default: '', placeholder: 'например: ya' },
+      field: { name: 'Чей это телевизор', description: 'Имя человека. На всех его устройствах — одинаковое, у других людей — своё' }
+    });
+
+    Lampa.SettingsApi.addParam({
+      component: 'tv_torrents',
+      param: { name: 'tvt_sync_repo', type: 'input', values: '', default: 'lampa-sync', placeholder: 'lampa-sync' },
+      field: { name: 'Репозиторий', description: 'Приватный репозиторий на GitHub: «lampa-sync» или «владелец/lampa-sync»' }
+    });
+
+    Lampa.SettingsApi.addParam({
+      component: 'tv_torrents',
+      param: { name: 'tvt_sync_token', type: 'input', values: '', default: '', placeholder: 'github_pat_…' },
+      field: { name: 'Токен GitHub', description: 'Fine-grained токен только на этот репозиторий, права Contents: чтение и запись' },
+      // Значение Lampa подставляет уже после onRender — прячем на следующем такте
+      onRender: function (item) { setTimeout(function () { maskToken(item); }, 0); }
+    });
+
+    Lampa.SettingsApi.addParam({
+      component: 'tv_torrents',
+      param: { name: 'tvt_sync_now', type: 'button' },
+      field: { name: 'Синхронизировать сейчас', description: 'Прогресс, отметки «просмотрено», закладки, выбор озвучки и раздачи' },
+      onRender: function (item) {
+        item.find('.settings-param__descr').append($('<div class="tvt-sync-status"></div>').text(syncStatusText()));
+      },
+      onChange: function () {
+        runSync(true);
+      }
+    });
+
+    Lampa.Storage.listener.follow('change', function (e) {
+      if (['tvt_sync_name', 'tvt_sync_repo', 'tvt_sync_token'].indexOf(e.name) === -1) return;
+
+      // Другой человек, репозиторий или токен — начинаем с чистого листа: чужие версии файлов не помним
+      if (e.name !== 'tvt_sync_name') Lampa.Storage.set('tvt_sync_owner', '');
+      Lampa.Storage.set('tvt_sync_seen', {});
+      Lampa.Storage.set('tvt_sync_pushed', '');
+
+      if (e.name === 'tvt_sync_token') setTimeout(function () { maskToken($('.settings-param[data-name="tvt_sync_token"]')); }, 0);
+
+      scheduleSync(1500);
+    });
+  }
+
+  // Токен на экране не показываем целиком
+  function maskToken(item) {
+    var t = (Lampa.Storage.get('tvt_sync_token', '') + '').trim();
+
+    item.find('.settings-param__value').text(t ? '•••• ' + t.slice(-4) : 'не задан');
+  }
+
+  function syncStatusText() {
+    var st = Lampa.Storage.get('tvt_sync_status', '');
+
+    return 'Устройство: ' + syncDevice() + (st ? '. Последняя синхронизация: ' + st : '');
   }
 
   // Телефон в портрете: колонки экрана сериала встают друг под другом
@@ -2927,11 +3442,12 @@
     initEpisodeGrid();
     initAutoplay();
     initNarrow();
+    initSync();
 
     console.log('TV Torrents', 'started', VERSION);
   }
 
-  window.tvt_api = { parseRelease: parseRelease, buildSearchParams: buildSearchParams, version: VERSION };
+  window.tvt_api = { parseRelease: parseRelease, buildSearchParams: buildSearchParams, sync: function () { runSync(true); }, version: VERSION };
 
   if (window.appready) start();
   else {
