@@ -7,7 +7,7 @@
   if (window.tvt_plugin_ready) return;
   window.tvt_plugin_ready = true;
 
-  var VERSION = '1.8.1';
+  var VERSION = '1.9.0';
 
   // ---------------------------------------------------------------------------
   // Разбор названия раздачи
@@ -86,10 +86,11 @@
 
   STUDIOS.forEach(function (s) { KNOWN_STUDIOS[s[0]] = true; });
 
-  var TYPE_ORDER = ['dub', 'mvo', 'dvo', 'avo', 'vo', 'amateur', 'ukr', 'orig'];
+  var TYPE_ORDER = ['dub', 'sub', 'mvo', 'dvo', 'avo', 'vo', 'amateur', 'ukr', 'orig'];
 
   var TYPE_LABELS = {
     dub: 'Дубляж',
+    sub: 'Оригинал + субтитры',
     mvo: 'Многоголосый',
     dvo: 'Двухголосый',
     avo: 'Авторский',
@@ -336,6 +337,7 @@
 
         if (title || (lang && lang !== 'und')) addUnique(r.tracks, track.trim());
         if (lang === 'ukr' || lang === 'uk') addUnique(r.types, 'ukr');
+        if (lang && ['rus', 'ru', 'ukr', 'uk', 'und'].indexOf(lang) < 0) r.orig_audio = true;
         if (!title || /коммент|comment/i.test(title)) return;
 
         voiceTypesFrom(title, r.types);
@@ -383,6 +385,23 @@
     }
 
     r.channels = max_channels >= 8 ? '7.1' : max_channels >= 6 ? '5.1' : '';
+  }
+
+  // Русские субтитры и оригинальная дорожка по названию раздачи: «Original + Sub Rus», «JAP+Sub»,
+  // «RAW+Rus Sub», «субтитры». «SubsPlease» (группа английских сабов) и «Sub Eng/Ukr» не считаются
+  function subsFromTitle(lower, r) {
+    lower = lower.replace(/subsplease/g, ' ');
+
+    var rus = /sub\s*rus|rus\s*sub|субтитр|(?:\+|,)\s*sub\b(?!\s*(?:eng|ukr|en\b|ua\b|\/))/.test(lower);
+
+    if (rus) r.rus_subs = true;
+    if (/original|оригинал|\b(?:jap|jpn|raw)\b/.test(lower)) r.orig_audio = true;
+
+    // kinozal: «СТ» в списке переводов — русские субтитры к оригинальной дорожке
+    if (lower.split(/[|\/,()\[\]+;]/).some(function (t) { return t.trim() === 'ст'; })) {
+      r.rus_subs = true;
+      r.orig_audio = true;
+    }
   }
 
   function parseRelease(el) {
@@ -453,6 +472,11 @@
       info.voices.forEach(function (v) {
         var types = [];
 
+        if (/субтитр|^\s*sub/i.test(v)) {
+          if (!/eng|англ|ukr|укр/i.test(v)) r.rus_subs = true;
+          return;
+        }
+
         voiceTypesFrom(v, types);
 
         if (types.length) types.forEach(function (t) { addUnique(r.types, t); });
@@ -461,6 +485,11 @@
     }
 
     if (Array.isArray(el.ffprobe) && el.ffprobe.length) applyFfprobe(el.ffprobe, r);
+
+    subsFromTitle(lower, r);
+
+    // Оригинал + субтитры: дорожка на языке оригинала и русские субтитры (по ffprobe или по названию)
+    if (r.orig_audio && r.rus_subs) addUnique(r.types, 'sub');
 
     if (!r.types.length && !r.studios.length && /\beng\b|original|оригинал/.test(lower)) r.types.push('orig');
 
@@ -1229,7 +1258,7 @@
       if (r.source) tags.append($('<span class="tvt-tag"></span>').text(r.source));
       if (r.codec) tags.append($('<span class="tvt-tag"></span>').text(r.codec));
       if (r.channels) tags.append($('<span class="tvt-tag"></span>').text(r.channels));
-      if (r.rus_subs) tags.append($('<span class="tvt-tag"></span>').text('Рус. субтитры'));
+      if (r.rus_subs && r.types.indexOf('sub') < 0) tags.append($('<span class="tvt-tag"></span>').text('Рус. субтитры'));
       if (r.is3d) tags.append($('<span class="tvt-tag tvt-tag--warn">3D</span>'));
       if (r.pack && !r.seasons.length) tags.append($('<span class="tvt-tag tvt-tag--warn">Сборник</span>'));
       if (r.disc) tags.append($('<span class="tvt-tag tvt-tag--warn">Образ диска</span>'));
