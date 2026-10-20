@@ -7,7 +7,7 @@
   if (window.tvt_plugin_ready) return;
   window.tvt_plugin_ready = true;
 
-  var VERSION = '1.11.0';
+  var VERSION = '1.11.1';
 
   // ---------------------------------------------------------------------------
   // Разбор названия раздачи
@@ -872,15 +872,12 @@
       tasks.push({ name: s.name, run: function (done, err) { jackettSearch(s, object, done, err); } });
     });
 
-    seasonQueries(object).forEach(function (q) {
-      tasks.push({ name: MAIN_SOURCE, quiet: true, run: function (done, err) { jackettSearch(q.src, q.object, done, err); } });
-    });
-
     var results = [];
     var failed = [];
     var left = tasks.length;
     var finished = false;
     var timer;
+    var wait = 1000 * ((parseInt(field('parse_timeout', 15), 10) || 15) + 5);
 
     function finish() {
       if (finished) return;
@@ -889,12 +886,40 @@
       clearTimeout(timer);
 
       var merged = mergeResults(results);
-      var loud = tasks.filter(function (t) { return !t.quiet; }).length;
 
-      if (!merged.length && failed.length === loud) return fail(failed.join(', '));
-      if (failed.length && loud > 1) Lampa.Noty.show('Не ответили: ' + failed.join(', '));
+      if (!merged.length && failed.length === tasks.length) return fail(failed.join(', '));
+      if (failed.length && tasks.length > 1) Lampa.Noty.show('Не ответили: ' + failed.join(', '));
 
       ok({ Results: merged });
+    }
+
+    // Запросы сезонов — только после ответа основного парсера и по одному: JacRed часто не принимает
+    // несколько запросов сразу с одного устройства, и тогда терялся основной ответ. Ошибка или
+    // пустой ответ на запрос сезона ничего не портит, основные раздачи уже есть
+    function seasonsThenFinish() {
+      var queries = results[0] ? seasonQueries(object) : [];
+
+      if (!queries.length) return finish();
+
+      clearTimeout(timer);
+      timer = setTimeout(finish, Math.min(wait, 12000));
+
+      var next = function (i) {
+        var q = queries[i];
+
+        if (!q || finished) return finish();
+
+        setTimeout(function () {
+          if (finished) return;
+
+          jackettSearch(q.src, q.object, function (list) {
+            results.push({ name: MAIN_SOURCE, items: list || [] });
+            next(i + 1);
+          }, function () { next(i + 1); });
+        }, 400);
+      };
+
+      next(0);
     }
 
     tasks.forEach(function (t, i) {
@@ -904,17 +929,17 @@
         if (settled) return;
         settled = true;
         results[i] = { name: t.name, items: list || [] };
-        if (--left === 0) finish();
+        if (--left === 0) seasonsThenFinish();
       }, function () {
         if (settled) return;
         settled = true;
-        if (!t.quiet) failed.push(t.name);
-        if (--left === 0) finish();
+        failed.push(t.name);
+        if (--left === 0) seasonsThenFinish();
       });
     });
 
     // Медленный источник не держит экран: отдаём то, что успело прийти
-    timer = setTimeout(finish, 1000 * ((parseInt(field('parse_timeout', 15), 10) || 15) + 5));
+    timer = setTimeout(finish, wait);
   }
 
   function clearSearch() {
