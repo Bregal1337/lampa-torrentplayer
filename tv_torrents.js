@@ -7,7 +7,7 @@
   if (window.tvt_plugin_ready) return;
   window.tvt_plugin_ready = true;
 
-  var VERSION = '1.10.1';
+  var VERSION = '1.11.0';
 
   // ---------------------------------------------------------------------------
   // Разбор названия раздачи
@@ -404,7 +404,28 @@
     }
   }
 
-  function parseRelease(el) {
+  // «Cyberpunk: Edgerunners 2 / Киберпанк: Бегущие по краю 2 [TV] [10 из 10]»: сезона в названии нет,
+  // но сразу после названия сериала стоит номер — это N-й сезон, если у сериала столько сезонов
+  function nameSeason(title, movie) {
+    var max = movie && movie.number_of_seasons || 0;
+
+    if (max < 2) return 0;
+
+    var norm = function (s) { return (s || '').toLowerCase().replace(/ё/g, 'е').replace(/[^a-zа-я0-9]+/g, ' ').trim(); };
+    var t = ' ' + norm(title) + ' ';
+    var names = [movie.name, movie.original_name, movie.title, movie.original_title].map(norm).filter(Boolean);
+
+    for (var i = 0; i < names.length; i++) {
+      var at = t.indexOf(' ' + names[i] + ' ');
+      var m = at >= 0 ? /^(\d{1,2}) /.exec(t.slice(at + names[i].length + 2)) : null;
+
+      if (m && +m[1] >= 2 && +m[1] <= max) return +m[1];
+    }
+
+    return 0;
+  }
+
+  function parseRelease(el, movie) {
     var title = el.Title || '';
     var lower = title.toLowerCase();
     var info = el.info || {};
@@ -495,6 +516,12 @@
     if (!r.types.length && !r.studios.length && /\beng\b|original|оригинал/.test(lower)) r.types.push('orig');
 
     r.seasons = info.seasons && info.seasons.length ? info.seasons.map(function (s) { return parseInt(s, 10); }).filter(function (s) { return s > 0; }) : parseSeasons(lower);
+
+    if (!r.seasons.length && movie && movie.original_name) {
+      var ns = nameSeason(title, movie);
+
+      if (ns) r.seasons = [ns];
+    }
     r.total = parseTotal(lower);
     r.episodes = parseEpisodes(lower);
     r.ep_range = parseEpisodeRange(lower);
@@ -797,6 +824,40 @@
     return out;
   }
 
+  // Продолжения на трекерах часто названы «Название 2» («Cyberpunk: Edgerunners 2 / Киберпанк: Бегущие
+  // по краю 2» на rutracker), а JacRed ищет раздачи по точному названию — на запрос с названием сериала
+  // они не приходят. Для сезонов со 2-го (последних трёх вышедших) спрашиваем тот же JacRed ещё раз:
+  // «Название N» и год сезона
+  function seasonQueries(object) {
+    var movie = object.movie || {};
+
+    if (!movie.id || object.from_search || object.clarification || !movie.original_name) return [];
+    if (!Lampa.Storage.field('parser_use') || Lampa.Storage.field('parser_torrent_type') !== 'jackett') return [];
+
+    var url = ((Lampa.Storage.field('jackett_url') || '') + '').trim().replace(/\/+$/, '');
+
+    if (!url) return [];
+    if (!/^https?:\/\//i.test(url)) url = 'http://' + url;
+
+    var src = { url: url, key: Lampa.Storage.field('jackett_key') || '', name: MAIN_SOURCE };
+    var seasons = (movie.seasons || []).filter(function (s) { return s.season_number >= 2 && s.air_date && !isFuture(s.air_date); }).slice(-3);
+
+    return seasons.map(function (s) {
+      var n = s.season_number;
+      var m = {};
+
+      for (var k in movie) m[k] = movie[k];
+
+      m.title = (movie.title || movie.name) + ' ' + n;
+      m.name = (movie.name || movie.title) + ' ' + n;
+      m.original_title = (movie.original_title || movie.original_name) + ' ' + n;
+      m.original_name = (movie.original_name || movie.original_title) + ' ' + n;
+      m.first_air_date = s.air_date;
+
+      return { src: src, object: { movie: m, search: m.original_name } };
+    });
+  }
+
   // ok({Results}) — когда ответили все источники (или вышло время); fail — если не ответил ни один
   function searchReleases(object, ok, fail) {
     var tasks = [{ name: MAIN_SOURCE, run: function (done, err) {
@@ -809,6 +870,10 @@
 
     extraSources().forEach(function (s) {
       tasks.push({ name: s.name, run: function (done, err) { jackettSearch(s, object, done, err); } });
+    });
+
+    seasonQueries(object).forEach(function (q) {
+      tasks.push({ name: MAIN_SOURCE, quiet: true, run: function (done, err) { jackettSearch(q.src, q.object, done, err); } });
     });
 
     var results = [];
@@ -824,9 +889,10 @@
       clearTimeout(timer);
 
       var merged = mergeResults(results);
+      var loud = tasks.filter(function (t) { return !t.quiet; }).length;
 
-      if (!merged.length && failed.length === tasks.length) return fail(failed.join(', '));
-      if (failed.length && tasks.length > 1) Lampa.Noty.show('Не ответили: ' + failed.join(', '));
+      if (!merged.length && failed.length === loud) return fail(failed.join(', '));
+      if (failed.length && loud > 1) Lampa.Noty.show('Не ответили: ' + failed.join(', '));
 
       ok({ Results: merged });
     }
@@ -842,7 +908,7 @@
       }, function () {
         if (settled) return;
         settled = true;
-        failed.push(t.name);
+        if (!t.quiet) failed.push(t.name);
         if (--left === 0) finish();
       });
     });
@@ -929,7 +995,7 @@
         var results = data && data.Results ? data.Results : [];
 
         items = results.map(function (el) {
-          return { el: el, r: parseRelease(el) };
+          return { el: el, r: parseRelease(el, object.movie) };
         });
 
         _this.activity.loader(false);
@@ -1900,7 +1966,7 @@
     var start = Lampa.Torrent.start;
 
     Lampa.Torrent.start = function (el, movie) {
-      torrent_ctx = el && movie ? { movie_id: movie.id, r: parseRelease(el) } : null;
+      torrent_ctx = el && movie ? { movie_id: movie.id, r: parseRelease(el, movie) } : null;
 
       return start.apply(this, arguments);
     };
@@ -2889,8 +2955,15 @@
 
       // Сериал: раздачи с годами вне лет выхода — другое произведение с тем же названием
       // (фильм «Тетрадь смерти» 2017 года у сериала 2006–2007)
-      var y0 = parseInt((movie.first_air_date || '').slice(0, 4), 10);
-      var y1 = parseInt((movie.last_air_date || '').slice(0, 4), 10) || new Date().getFullYear();
+      // Конец — по последнему сезону и следующей серии: TMDB обновляет last_air_date с опозданием
+      // («Киберпанк: Бегущие по краю», 2 сезон вышел в 2026, а last_air_date ещё 2022); идущий сериал — до этого года
+      var yearOf = function (d) { return parseInt((d || '').slice(0, 4), 10) || 0; };
+      var y0 = yearOf(movie.first_air_date);
+      var y1 = Math.max(yearOf(movie.last_air_date), yearOf(movie.next_episode_to_air && movie.next_episode_to_air.air_date));
+
+      (movie.seasons || []).forEach(function (s) { y1 = Math.max(y1, yearOf(s.air_date)); });
+
+      if (!y1 || movie.in_production || /returning|production|planned/i.test(movie.status || '')) y1 = Math.max(y1, new Date().getFullYear());
 
       if (y0) {
         var in_years = list.filter(function (it) {
@@ -3599,7 +3672,7 @@
 
       searchReleases(object, function (data) {
         items = (data && data.Results ? data.Results : []).map(function (el) {
-          return { el: el, r: parseRelease(el) };
+          return { el: el, r: parseRelease(el, movie) };
         });
 
         if (!serial) return _this.afterLoad();
@@ -5097,7 +5170,7 @@
 
   // Для проверки разбора сезонов на сохранённых данных: результаты парсера + серии TMDB → сезоны
   function testSeasons(movie, results, data) {
-    var items = results.map(function (el) { return { el: el, r: parseRelease(el) }; });
+    var items = results.map(function (el) { return { el: el, r: parseRelease(el, movie) }; });
     var plan = planSplit(movie, items);
     var list = plan ? splitSeasons(movie, data, plan) : null;
 
