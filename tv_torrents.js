@@ -7,7 +7,7 @@
   if (window.tvt_plugin_ready) return;
   window.tvt_plugin_ready = true;
 
-  var VERSION = '1.4.2';
+  var VERSION = '1.5.0';
 
   // ---------------------------------------------------------------------------
   // Разбор названия раздачи
@@ -3304,6 +3304,179 @@
     }, ms);
   }
 
+  // ---------------------------------------------------------------------------
+  // «Удалить из истории» в меню карточки (долгое OK) и в «Закладках» на странице фильма.
+  // Галочка «История» в Lampa только убирает карточку из списка: прогресс остаётся,
+  // и карточка по-прежнему выглядит просмотренной. Здесь стираем и то и другое,
+  // а сброс уходит на остальные устройства как свежая запись с нулевым прогрессом.
+  // ---------------------------------------------------------------------------
+
+  var long_press = { el: null, at: 0 };
+
+  // Все записи Timeline этой карточки: фильм — по названию, сериал — по сезону и серии
+  function titleHashes(card, raw) {
+    var names = [card.original_title, card.original_name].filter(function (n, i, a) { return n && a.indexOf(n) === i; });
+    var seasons = Math.max(card.number_of_seasons || 0, 40);
+    var out = [];
+
+    names.forEach(function (n) {
+      var h = Lampa.Utils.hash(n);
+
+      // У фильма и сериала с одинаковым оригинальным названием («Resident Evil») общий хеш фильма —
+      // поэтому для сериала его не трогаем
+      if (!card.original_name) {
+        if (raw[h] !== undefined) out.push(h);
+        return;
+      }
+
+      for (var s = 0; s <= seasons; s++) {
+        for (var e = 0; e <= 400; e++) {
+          h = Lampa.Utils.hash([s, s > 10 ? ':' : '', e, n].join(''));
+
+          if (raw[h] !== undefined && out.indexOf(h) === -1) out.push(h);
+        }
+      }
+    });
+
+    return out;
+  }
+
+  function hasProgress(r) {
+    return r && typeof r === 'object' ? !!(r.percent || r.time) : !!r;
+  }
+
+  function forgetTitle(card) {
+    var raw = readJson(timelineName());
+    var now = Date.now();
+    var hashes = titleHashes(card, raw).filter(function (h) { return hasProgress(raw[h]); });
+    var key = cardKey(card);
+
+    // Нулевой прогресс с текущим временем, а не удаление записи: иначе при синхронизации
+    // старый прогресс вернулся бы с другого устройства
+    if (hashes.length <= 15) {
+      hashes.forEach(function (h) {
+        Lampa.Timeline.update({ hash: h, percent: 0, time: 0, duration: 0, updated: now });
+      });
+    } else {
+      hashes.forEach(function (h) {
+        var r = raw[h] && typeof raw[h] === 'object' ? raw[h] : { profile: 0 };
+
+        r.percent = 0;
+        r.time = 0;
+        r.duration = 0;
+        r.updated = now;
+        raw[h] = r;
+      });
+
+      Lampa.Storage.set(timelineName(), raw);
+      if (Lampa.Timeline.read) Lampa.Timeline.read();
+      if (Lampa.Timeline.listener) Lampa.Timeline.listener.send('update', { data: {} });
+    }
+
+    // Последняя серия забывается, выбранные озвучка и качество остаются
+    var titles = readTitles();
+
+    if (titles[key]) {
+      delete titles[key].last;
+      titles[key].t = now;
+      Lampa.Storage.set('tvt_titles', titles);
+    }
+
+    // Иначе разбор отметок TorrServer снова отметил бы серии просмотренными
+    var sessions = readJson('tvt_sessions');
+
+    if (sessions[key]) {
+      delete sessions[key];
+      Lampa.Storage.set('tvt_sessions', sessions);
+    }
+
+    if (Lampa.Favorite.check(card).history) Lampa.Favorite.remove('history', card);
+    else Lampa.Listener.send('state:changed', { target: 'favorite', reason: 'update', method: 'forget', type: 'history', card: card });
+
+    scheduleSync(3000, true);
+
+    Lampa.Noty.show('«' + (card.title || card.name) + '» удалён из истории' + (hashes.length ? ', прогресс сброшен' : ''));
+  }
+
+  // На странице «История» Lampa сама карточку не убирает — открываем страницу заново
+  function refreshHistoryPage() {
+    var act = Lampa.Activity.active && Lampa.Activity.active();
+
+    if (act && act.component === 'favorite' && act.type === 'history' && Lampa.Activity.replace) Lampa.Activity.replace();
+  }
+
+  function confirmForget(card, enabled) {
+    Lampa.Select.show({
+      title: 'Удалить «' + (card.title || card.name) + '» из истории?',
+      items: [
+        { title: 'Удалить', subtitle: 'Пропадёт из «Истории» и «Продолжить», прогресс серий сбросится — на всех ваших устройствах', forget: true },
+        { title: 'Отмена' }
+      ],
+      onSelect: function (a) {
+        Lampa.Controller.toggle(enabled);
+
+        if (a.forget) {
+          forgetTitle(card);
+          refreshHistoryPage();
+        }
+      },
+      onBack: function () { Lampa.Controller.toggle(enabled); }
+    });
+  }
+
+  // Меню с галочкой «История» → чья карточка: долгое нажатие на карточке или открытая страница фильма
+  function menuCard(params) {
+    var items = params && params.items;
+
+    if (!items || !items.some(function (a) { return a.checkbox && (a.where === 'history' || a.type === 'history'); })) return null;
+
+    if (params.title === Lampa.Lang.translate('title_action')) {
+      if (Date.now() - long_press.at > 3000) return null;
+
+      for (var el = long_press.el; el && el !== document.body; el = el.parentNode) {
+        if (el.card_data && el.card_data.id) return el.card_data;
+      }
+
+      return null;
+    }
+
+    var act = Lampa.Activity.active && Lampa.Activity.active();
+
+    return act && act.card && act.card.id ? act.card : null;
+  }
+
+  function initForget() {
+    // hover:long не всплывает, но перехват на document видит и такие события
+    document.addEventListener('hover:long', function (e) {
+      long_press.el = e.target;
+      long_press.at = Date.now();
+    }, true);
+
+    var show = Lampa.Select.show;
+
+    Lampa.Select.show = function (params) {
+      try {
+        var card = menuCard(params);
+
+        if (card && (Lampa.Favorite.check(card).history || Lampa.Timeline.watched(card))) {
+          var enabled = Lampa.Controller.enabled().name;
+          var at = 0;
+
+          params.items.forEach(function (a, i) { if (a.where === 'history' || a.type === 'history') at = i + 1; });
+          params.items.splice(at, 0, {
+            title: 'Удалить из истории',
+            subtitle: 'и сбросить прогресс просмотра',
+            onSelect: function () { confirmForget(card, enabled); }
+          });
+        }
+      } catch (e) {
+        console.log('TV Torrents', 'forget menu', e);
+      }
+
+      return show.apply(this, arguments);
+    };
+  }
+
   function initSync() {
     // Изменения забираем и складываем быстро, а коммит делается не чаще раза в 10 минут (см. runSync)
     if (Lampa.Timeline.listener) Lampa.Timeline.listener.follow('update', function () { scheduleSync(90000); });
@@ -3694,6 +3867,7 @@
     initAutoplay();
     initNarrow();
     initSync();
+    initForget();
 
     console.log('TV Torrents', 'started', VERSION);
   }
