@@ -8,7 +8,7 @@
   // Карточки открываются обычной карточкой TMDB, поэтому кнопка «Торренты» работает как всегда.
   // ---------------------------------------------------------------------------
 
-  var VERSION = '1.4.0';
+  var VERSION = '1.4.1';
   var HOSTS = ['https://shikimori.io', 'https://shikimori.rip'];
   var REDIRECT = 'urn:ietf:wg:oauth:2.0:oob';
   var PAGE = 20;
@@ -349,45 +349,29 @@
 
       if (!card.shiki) return Lampa.Api.sources.tmdb.full(params, oncomplite, onerror);
 
-      // Ответа нет ни так, ни так — не крутим загрузку вечно
+      // Lampa ждёт от onerror объект ошибки (читает status.blocked) — без него экран карточки падает
       var settled = false;
-      var guard = setTimeout(function () {
+      var attempt = 0;
+      var notFound = function () {
         if (settled) return;
 
         settled = true;
-        Lampa.Noty.show('Карточка «' + (card.name || card.title) + '» не загрузилась — открываю поиск');
-        onerror();
-        openSearch();
-      }, 30000);
-      var complete = function (data) {
-        if (settled) return;
-
-        settled = true;
-        clearTimeout(guard);
-        oncomplite(data);
-      };
-      var error = function () {
-        if (settled) return;
-
-        settled = true;
-        clearTimeout(guard);
-        onerror.apply(this, arguments);
-      };
-      var openSearch = function () {
+        Lampa.Noty.show('«' + (card.name || card.title) + '» не найдено на TMDB — открываю поиск');
+        onerror({});
         setTimeout(function () {
           Lampa.Activity.push({ url: '', title: 'Поиск', component: 'search', query: card.shiki.russian || card.shiki.name, page: 1 });
         }, 300);
       };
-      var notFound = function () {
+
+      // Карточку открываем сразу, а что она есть на TMDB, проверяем параллельно — без лишнего ожидания.
+      // Карты ведут на карточку, которой нет (404), — бросаем эту загрузку, ищем по названию и открываем найденное
+      var open = function (found, verify) {
         if (settled) return;
 
-        Lampa.Noty.show('«' + (card.name || card.title) + '» не найдено на TMDB — открываю поиск');
-        error();
-        openSearch();
-      };
-
-      var open = function (found) {
-        if (settled) return;
+        var mine = ++attempt;
+        // Ошибку Lampa по этой карточке придерживаем, пока не ясно, есть ли карточка: нет — откроем другую
+        var checked = !verify;
+        var held = null;
 
         params.id = found.id;
         params.method = found.method;
@@ -399,20 +383,46 @@
         rating_cache[found.method + found.id] = card.vote_average;
         cacheSet('tva_known', found.method + found.id, 1, 500);
 
-        Lampa.Api.sources.tmdb.full(params, complete, error);
-      };
+        Lampa.Api.sources.tmdb.full(params, function (data) {
+          if (settled || mine !== attempt) return;
 
-      findTmdb(card.shiki, function (found) {
-        checkTmdb(found, open, function () {
-          // Карты ведут на карточку, которой на TMDB нет, — ищем по названию и запоминаем найденное
+          settled = true;
+          oncomplite(data);
+        }, function (e) {
+          if (settled || mine !== attempt) return;
+          if (!checked) {
+            held = e || {};
+            return;
+          }
+
+          settled = true;
+          onerror(e || {});
+        });
+
+        if (!verify) return;
+
+        checkTmdb(found, function () {
+          checked = true;
+
+          if (held && !settled && mine === attempt) {
+            settled = true;
+            onerror(held);
+          }
+        }, function () {
+          checked = true;
+
+          if (settled) return;
+
           console.log('Anime', 'TMDB ' + found.method + '/' + found.id + ' нет, ищу «' + card.shiki.name + '» по названию');
 
           searchTmdb(card.shiki, function (again) {
             cacheSet('tva_map2', card.shiki.id, again, 500);
-            checkTmdb(again, open, notFound);
+            open(again, false);
           }, notFound);
         });
-      }, notFound);
+      };
+
+      findTmdb(card.shiki, function (found) { open(found, true); }, notFound);
     },
     seasons: function (tv, from, oncomplite) {
       Lampa.Api.sources.tmdb.seasons(tv, from, oncomplite);
