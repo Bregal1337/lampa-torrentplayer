@@ -8,7 +8,7 @@
   // Карточки открываются обычной карточкой TMDB, поэтому кнопка «Торренты» работает как всегда.
   // ---------------------------------------------------------------------------
 
-  var VERSION = '1.0.0';
+  var VERSION = '1.1.0';
   var HOSTS = ['https://shikimori.io', 'https://shikimori.rip'];
   var REDIRECT = 'urn:ietf:wg:oauth:2.0:oob';
   var PAGE = 20;
@@ -835,16 +835,30 @@
     document.head.appendChild(s);
   }
 
-  function login() {
-    var keys = clientKeys();
-
-    if (!keys.id || !keys.secret) return Lampa.Noty.show('Сначала укажите Client ID и Client Secret приложения Shikimori');
-
-    var url = HOSTS[host_index] + '/oauth/authorize?client_id=' + encodeURIComponent(keys.id) + '&redirect_uri=' + encodeURIComponent(REDIRECT) + '&response_type=code&scope=user_rates';
+  // Окно с QR-кодом для телефона. watch(stop) вызывается раз в 5 секунд, пока окно открыто
+  function qrWindow(title, text, url, buttons, watch) {
     var html = $('<div class="tva-login"><div class="tva-login__qr"></div><div class="tva-login__text"></div><div class="tva-login__url"></div></div>');
     var enabled = Lampa.Controller.enabled().name;
+    var open = true;
+    var timer = null;
 
-    html.find('.tva-login__text').text('Откройте ссылку на телефоне (наведите камеру на код), войдите в Shikimori и нажмите «Разрешить». Shikimori покажет код — нажмите «Ввести код» и вставьте его.');
+    var close = function () {
+      if (!open) return;
+
+      open = false;
+      clearTimeout(timer);
+      Lampa.Modal.close();
+      Lampa.Controller.toggle(enabled);
+    };
+
+    var tick = function () {
+      if (!open || !watch) return;
+
+      watch(close);
+      timer = setTimeout(tick, 5000);
+    };
+
+    html.find('.tva-login__text').text(text);
     html.find('.tva-login__url').text(url);
 
     loadQr(function (has) {
@@ -856,28 +870,143 @@
     });
 
     Lampa.Modal.open({
-      title: 'Вход в Shikimori',
+      title: title,
       html: html,
       size: 'medium',
-      buttons: [{
-        name: 'Ввести код',
-        onSelect: function () {
-          // Окно с QR закрываем, иначе поле ввода окажется под ним
-          Lampa.Modal.close();
-
-          Lampa.Input.edit({ title: 'Код от Shikimori', value: '', free: true, nosave: true, keyboard: 'system' }, function (code) {
-            code = (code || '').trim();
-            Lampa.Controller.toggle(enabled);
-
-            if (code) exchangeCode(code, keys);
-          });
-        }
-      }],
-      onBack: function () {
-        Lampa.Modal.close();
-        Lampa.Controller.toggle(enabled);
-      }
+      buttons: (buttons || []).map(function (b) {
+        return { name: b.name, onSelect: function () { b.onSelect(close); } };
+      }),
+      onBack: close
     });
+
+    timer = setTimeout(tick, 5000);
+
+    return close;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Всё вводится на телефоне: на ТВ показываем QR-код, телефон открывает приватный репозиторий
+  // синхронизации на сайте GitHub с готовым файлом, туда вставляются ключи или код, а ТВ сам
+  // забирает их через несколько секунд. Клавиатура телевизора не нужна
+  // ---------------------------------------------------------------------------
+
+  var KEYS_FILE = 'shikimori_keys.txt';
+  var KEYS_TEMPLATE = 'client_id: \nclient_secret: \n';
+
+  function phoneReady() {
+    if (window.tvt_api && tvt_api.store && tvt_api.store.ready() && tvt_api.store.info) return true;
+
+    Lampa.Noty.show('Нужна синхронизация через GitHub в «Торренты TV» (Настройки → Торренты TV)');
+
+    return false;
+  }
+
+  // Ссылка на сайт GitHub: создать файл с заготовкой или открыть существующий на редактирование
+  function githubFileUrl(file, template, exists, done) {
+    tvt_api.store.info(function (info) {
+      var path = info.dir + file;
+
+      done(exists ?
+        info.web + '/edit/' + info.branch + '/' + path.split('/').map(encodeURIComponent).join('/') :
+        info.web + '/new/' + info.branch + '?filename=' + encodeURIComponent(path) + '&value=' + encodeURIComponent(template));
+    }, function (status, msg) {
+      Lampa.Noty.show('GitHub: ' + (msg || status));
+    });
+  }
+
+  function parseKeys(text) {
+    var id = /client[_\s-]*id\s*[:=]\s*([A-Za-z0-9_\-]{10,})/i.exec(text || '');
+    var secret = /client[_\s-]*secret\s*[:=]\s*([A-Za-z0-9_\-]{10,})/i.exec(text || '');
+
+    return id && secret ? { id: id[1], secret: secret[1] } : null;
+  }
+
+  function phoneKeys(then) {
+    if (!phoneReady()) return;
+
+    tvt_api.store.get(KEYS_FILE, function (text, sha) {
+      githubFileUrl(KEYS_FILE, KEYS_TEMPLATE, !!sha, function (url) {
+        qrWindow('Ключи Shikimori с телефона', 'Откройте ссылку на телефоне (наведите камеру на код). Откроется ваш приватный репозиторий на GitHub: вставьте Client ID и Client Secret после двоеточий и нажмите «Commit changes». Телевизор заберёт ключи сам.', url, [], function (close) {
+          tvt_api.store.get(KEYS_FILE, function (fresh) {
+            var keys = parseKeys(typeof fresh === 'string' ? fresh : '');
+
+            if (!keys) return;
+
+            var cur = clientKeys();
+
+            if (keys.id === cur.id && keys.secret === cur.secret && sha) {
+              // Файл не меняли — ждём, пока поправят
+              if (fresh === text) return;
+            }
+
+            Lampa.Storage.set('tva_client_id', keys.id);
+            Lampa.Storage.set('tva_client_secret', keys.secret);
+            close();
+            Lampa.Noty.show('Shikimori: ключи получены');
+            updateKeysDescr();
+
+            if (then) setTimeout(then, 400);
+          }, function () {});
+        });
+      });
+    }, function (status, msg) {
+      Lampa.Noty.show('GitHub: ' + (msg || status));
+    });
+  }
+
+  // Код от Shikimori — в новый файл с телефона; имя каждый раз своё, чтобы не перепутать со старым
+  function phoneCode(keys) {
+    if (!phoneReady()) return;
+
+    var file = 'shikimori_code_' + Date.now().toString(36) + '.txt';
+
+    githubFileUrl(file, '', false, function (url) {
+      qrWindow('Код Shikimori с телефона', 'Скопируйте код со страницы Shikimori, откройте эту ссылку на телефоне, вставьте код и нажмите «Commit changes». Телевизор заберёт его сам.', url, [], function (close) {
+        tvt_api.store.get(file, function (text) {
+          var code = (typeof text === 'string' ? text : '').replace(/^[^:]*:\s*/, '').trim();
+
+          if (!code || !/^[A-Za-z0-9_\-]{10,}$/.test(code)) return;
+
+          close();
+          exchangeCode(code, keys);
+        }, function () {});
+      });
+    });
+  }
+
+  function login() {
+    var keys = clientKeys();
+
+    if (!keys.id || !keys.secret) {
+      if (window.tvt_api && tvt_api.store && tvt_api.store.ready()) return phoneKeys(login);
+
+      return Lampa.Noty.show('Сначала укажите Client ID и Client Secret приложения Shikimori');
+    }
+
+    var url = HOSTS[host_index] + '/oauth/authorize?client_id=' + encodeURIComponent(keys.id) + '&redirect_uri=' + encodeURIComponent(REDIRECT) + '&response_type=code&scope=user_rates';
+
+    qrWindow('Вход в Shikimori', 'Откройте ссылку на телефоне (наведите камеру на код), войдите в Shikimori и нажмите «Разрешить». Shikimori покажет код — нажмите «Код с телефона» и вставьте его на GitHub, или «Ввести код» здесь.', url, [{
+      name: 'Код с телефона',
+      onSelect: function (close) {
+        close();
+        phoneCode(keys);
+      }
+    }, {
+      name: 'Ввести код',
+      onSelect: function (close) {
+        // Окно с QR закрываем, иначе поле ввода окажется под ним
+        close();
+
+        var enabled = Lampa.Controller.enabled().name;
+
+        Lampa.Input.edit({ title: 'Код от Shikimori', value: '', free: true, nosave: true, keyboard: 'system' }, function (code) {
+          code = (code || '').trim();
+          Lampa.Controller.toggle(enabled);
+
+          if (code) exchangeCode(code, keys);
+        });
+      }
+    }]);
   }
 
   function exchangeCode(code, keys) {
@@ -1175,6 +1304,17 @@
     return v ? '•••• ' + v.slice(-4) : 'не указан';
   }
 
+  function shortKey(v) {
+    v = (v || '') + '';
+
+    return v ? v.slice(0, 6) + '…' + v.slice(-4) : 'не указан';
+  }
+
+  function updateKeysDescr() {
+    $('[data-name="tva_client_id_edit"] .settings-param__descr').text(shortKey(field('tva_client_id', '')));
+    $('[data-name="tva_client_secret_edit"] .settings-param__descr').text(maskSecret(field('tva_client_secret', '')));
+  }
+
   function initSettings() {
     Lampa.SettingsApi.addComponent({
       component: 'tva_anime',
@@ -1196,7 +1336,7 @@
       param: { name: 'tva_help', type: 'static' },
       field: {
         name: 'Как подключить',
-        description: 'Один раз: shikimori.io → Настройки → Приложения → создать. Название — как в поле ниже, Redirect URI — urn:ietf:wg:oauth:2.0:oob, права — user_rates. Скопируйте Client ID и Client Secret сюда, затем «Войти». С синхронизацией через GitHub вход появится на остальных устройствах сам.'
+        description: 'Один раз: shikimori.io → Настройки → Приложения → создать. Название — как в поле ниже, Redirect URI — urn:ietf:wg:oauth:2.0:oob, права — user_rates. Затем «Войти в Shikimori»: ключи и код вставляются на телефоне через ваш репозиторий синхронизации на GitHub, на ТВ ничего вводить не нужно. Вход появится на остальных устройствах сам.'
       }
     });
 
@@ -1208,8 +1348,26 @@
 
     Lampa.SettingsApi.addParam({
       component: 'tva_anime',
-      param: { name: 'tva_client_id', type: 'input', values: '', default: '', placeholder: '' },
-      field: { name: 'Client ID' }
+      param: { name: 'tva_keys_phone', type: 'button' },
+      field: { name: 'Ключи с телефона', description: 'QR-код → GitHub на телефоне → вставить Client ID и Secret. Вводить на ТВ ничего не нужно' },
+      onChange: function () { phoneKeys(); }
+    });
+
+    // Запасной путь — системная клавиатура (у полей Lampa своя клавиатура, в неё не вставить с телефона)
+    Lampa.SettingsApi.addParam({
+      component: 'tva_anime',
+      param: { name: 'tva_client_id_edit', type: 'button' },
+      field: { name: 'Client ID', description: shortKey(field('tva_client_id', '')) },
+      onChange: function () {
+        Lampa.Input.edit({ title: 'Client ID', value: field('tva_client_id', '') + '', free: true, nosave: true, keyboard: 'system' }, function (v) {
+          v = (v || '').trim();
+
+          if (!v) return;
+
+          Lampa.Storage.set('tva_client_id', v);
+          updateKeysDescr();
+        });
+      }
     });
 
     Lampa.SettingsApi.addParam({
@@ -1223,7 +1381,7 @@
           if (!v) return;
 
           Lampa.Storage.set('tva_client_secret', v);
-          $('[data-name="tva_client_secret_edit"] .settings-param__descr').text(maskSecret(v));
+          updateKeysDescr();
         });
       }
     });
@@ -1289,7 +1447,7 @@
     console.log('Anime', 'started', VERSION);
   }
 
-  window.tva_api = { version: VERSION, login: login, exchange: function (code) { exchangeCode(code, clientKeys()); }, pullAuth: pullAuth, findTmdb: findTmdb, shikiForTmdb: shikiForTmdb, shikiForSeason: shikiForSeason, baseName: baseName, gql: gql };
+  window.tva_api = { version: VERSION, login: login, phoneKeys: phoneKeys, phoneCode: phoneCode, parseKeys: parseKeys, exchange: function (code) { exchangeCode(code, clientKeys()); }, pullAuth: pullAuth, findTmdb: findTmdb, shikiForTmdb: shikiForTmdb, shikiForSeason: shikiForSeason, baseName: baseName, gql: gql };
 
   if (window.appready) start();
   else {

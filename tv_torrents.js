@@ -7,7 +7,7 @@
   if (window.tvt_plugin_ready) return;
   window.tvt_plugin_ready = true;
 
-  var VERSION = '1.7.0';
+  var VERSION = '1.7.1';
 
   // ---------------------------------------------------------------------------
   // Разбор названия раздачи
@@ -3809,15 +3809,37 @@
 
     syncRepo(cfg, function (repo) {
       gh(cfg, 'GET', storePath(cfg, repo, file), null, function (json) {
+        var text;
+
         try {
-          ok(JSON.parse(b64decode(json.content)), json.sha);
+          text = b64decode(json.content);
         } catch (e) {
-          fail(0, 'файл испорчен');
+          return fail(0, 'файл испорчен');
+        }
+
+        // JSON — объектом, остальное (например, текст, вставленный с телефона на сайте GitHub) — строкой
+        try {
+          ok(JSON.parse(text), json.sha);
+        } catch (e) {
+          ok(text, json.sha);
         }
       }, function (status, message) {
         if (status === 404) ok(null, null);
         else fail(status, message);
       });
+    }, fail);
+  }
+
+  // Где в репозитории лежат эти файлы — чтобы показать ссылку на сайт GitHub (создать файл с телефона)
+  function storeInfo(ok, fail) {
+    var cfg = syncConfig();
+
+    if (!cfg) return fail(0, 'синхронизация через GitHub не настроена');
+
+    syncRepo(cfg, function (repo) {
+      gh(cfg, 'GET', '/repos/' + repo, null, function (json) {
+        ok({ web: json.html_url || 'https://github.com/' + repo, branch: json.default_branch || 'main', dir: cfg.name + '/_extra/' });
+      }, fail);
     }, fail);
   }
 
@@ -4447,7 +4469,7 @@
     testSeasons: testSeasons,
     sync: function () { runSync(true); },
     // Для anime.js: свои файлы в репозитории синхронизации и открытие сериала на нужном сезоне
-    store: { ready: function () { return !!syncConfig(); }, get: storeGet, put: storePut },
+    store: { ready: function () { return !!syncConfig(); }, get: storeGet, put: storePut, info: storeInfo },
     openSeason: function (id, season) { window.tvt_season_hint = { id: id, season: season, t: Date.now() }; },
     version: VERSION
   };
