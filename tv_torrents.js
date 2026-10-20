@@ -7,7 +7,7 @@
   if (window.tvt_plugin_ready) return;
   window.tvt_plugin_ready = true;
 
-  var VERSION = '1.8.0';
+  var VERSION = '1.8.1';
 
   // ---------------------------------------------------------------------------
   // Разбор названия раздачи
@@ -3133,8 +3133,12 @@
         return { season: s.season_number, episodes: s.episode_count, watched: upto, air_date: s.air_date || '' };
       });
 
-      var apply = function (list) {
+      // Каждая отметка в Lampa — запись всей истории просмотров и обновление всех карточек на
+      // экране, поэтому серии отмечаем по 10 за раз, отдавая кадр между пачками: на слабом ТВ
+      // сотня серий не замораживает экран
+      var apply = function (list, cb) {
         var parts = [];
+        var queue = [];
 
         (list || []).forEach(function (x) {
           var s = seasons.filter(function (y) { return y.season === x.season; })[0];
@@ -3145,7 +3149,7 @@
             var v = episodeView(movie, x.season, e);
 
             if (!isWatched(v)) {
-              v.handler(100, v.duration || 0, v.duration || 0);
+              queue.push(v);
               count++;
             }
           }
@@ -3153,25 +3157,33 @@
           if (count) parts.push(x.season + ' сезон: 1–' + n);
         });
 
-        return parts.length ? 'Shikimori: отмечены просмотренными ' + parts.join(', ') : '';
+        var step = function () {
+          queue.splice(0, 10).forEach(function (v) { v.handler(100, v.duration || 0, v.duration || 0); });
+
+          if (queue.length) return setTimeout(step, 16);
+
+          cb(parts.length ? 'Shikimori: отмечены просмотренными ' + parts.join(', ') : '');
+        };
+
+        step();
       };
 
       try {
         window.tvt_external_watched(movie, seasons, function (list) {
-          var text = apply(list);
-
+          // Ответ опоздал — экран уже собран, отметки ставим и обновляем его
           if (finished) {
-            if (text && ready) {
-              Lampa.Noty.show(text);
-              _this.refresh();
-            }
-
-            return;
+            return apply(list, function (text) {
+              if (text && ready) {
+                Lampa.Noty.show(text);
+                _this.refresh();
+              }
+            });
           }
 
-          finished = true;
           clearTimeout(timer);
-          done(text);
+          finished = true;
+
+          apply(list, done);
         });
       } catch (e) {
         console.log('TV Torrents', 'external watched', e);

@@ -8,7 +8,7 @@
   // Карточки открываются обычной карточкой TMDB, поэтому кнопка «Торренты» работает как всегда.
   // ---------------------------------------------------------------------------
 
-  var VERSION = '1.3.0';
+  var VERSION = '1.3.1';
   var HOSTS = ['https://shikimori.io', 'https://shikimori.rip'];
   var REDIRECT = 'urn:ietf:wg:oauth:2.0:oob';
   var PAGE = 20;
@@ -887,6 +887,7 @@
   function saveAuth(a, push) {
     a.t = Date.now();
     Lampa.Storage.set('tva_auth', a);
+    logged = null;
     updateStatus();
 
     if (push && window.tvt_api && tvt_api.store && tvt_api.store.ready()) {
@@ -896,10 +897,17 @@
     }
   }
 
-  function loggedIn() {
-    var a = auth();
+  var logged = null;
 
-    return !!(a.refresh_token && a.user_id);
+  // Вход проверяется часто (для каждой карточки) — читаем хранилище один раз, сбрасываем при изменении
+  function loggedIn() {
+    if (logged === null) {
+      var a = auth();
+
+      logged = !!(a.refresh_token && a.user_id);
+    }
+
+    return logged;
   }
 
   function clientKeys() {
@@ -1175,6 +1183,7 @@
   function logout() {
     Lampa.Storage.set('tva_auth', {});
     Lampa.Storage.set('tva_rates', {});
+    logged = null;
     cache = {};
     rates = null;
     tmdb_index = {};
@@ -1612,7 +1621,7 @@
 
   // Что показать на постере: смотрю → «16/24», отложено, просмотрено → ✓, запланировано, брошено
   function markFor(card) {
-    if (!card || !loggedIn() || !rates) return null;
+    if (!card || !rates) return null;
 
     var list;
 
@@ -1643,91 +1652,62 @@
     return { code: x.code, episodes: x.episodes, total: x.total || rates.tot[x.id] || 0 };
   }
 
-  var MARK_ICONS = {
-    c: '<svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-    w: '<svg viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5z" fill="currentColor"/></svg>',
-    h: '<svg viewBox="0 0 24 24"><path d="M8 5h3v14H8zM13 5h3v14h-3z" fill="currentColor"/></svg>',
-    p: '<svg viewBox="0 0 24 24"><path d="M7 4h10v16l-5-3.5L7 20z" fill="currentColor"/></svg>',
-    d: '<svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg>'
-  };
+  // Отметка — один элемент: значок рисуется CSS (без картинок), число серий — текстом.
+  // Ссылка на элемент хранится на карточке, поэтому повторная проверка ничего не ищет в DOM
+  var marks_on = true;
 
   function decorate(el) {
+    var m = marks_on ? markFor(el.card_data) : null;
+    var code = m ? (m.code === 'r' ? 'w' : m.code) : '';
+    var text = m && 'wh'.indexOf(code) >= 0 && m.episodes ? m.episodes + (m.total ? '/' + m.total : '') : '';
+    var sign = code + text;
+
+    if ((el.tva_sign || '') === sign) return;
+
+    el.tva_sign = sign;
+
+    if (el.tva_mark) {
+      el.tva_mark.remove();
+      el.tva_mark = null;
+    }
+
+    if (!code) return;
+
     var view = el.querySelector('.card__view');
 
     if (!view) return;
 
-    var old = view.querySelector('.tva-mark');
-    var m = field('tva_marks', true) ? markFor(el.card_data) : null;
-
-    if (!m) {
-      if (old) old.remove();
-      return;
-    }
-
-    var code = m.code === 'r' ? 'w' : m.code;
-    var text = 'wh'.indexOf(code) >= 0 && m.episodes ? m.episodes + (m.total ? '/' + m.total : '') : '';
-    var sign = code + '|' + text;
-
-    if (old && old.getAttribute('data-sign') === sign) return;
-    if (old) old.remove();
-
     var mark = document.createElement('div');
 
     mark.className = 'tva-mark tva-mark--' + code;
-    mark.setAttribute('data-sign', sign);
-    mark.innerHTML = MARK_ICONS[code] + (text ? '<span></span>' : '');
 
-    if (text) mark.querySelector('span').textContent = text;
+    if (text) mark.textContent = text;
 
     view.appendChild(mark);
+    el.tva_mark = mark;
   }
 
+  // Список поменялся — обновляем только карточки, которые уже показывались
   function decorateAll() {
     var cards = document.querySelectorAll('.card');
 
     for (var i = 0; i < cards.length; i++) {
-      if (cards[i].card_data) decorate(cards[i]);
+      var el = cards[i];
+
+      if (el.card_data && (el.called_visible || el.tva_sign !== undefined)) decorate(el);
     }
   }
 
-  // Карточки появляются в строках по мере прокрутки — ловим их, как только попали на страницу
+  // Lampa сама сообщает, когда карточка появилась на экране (событие visible, по нему же грузится
+  // постер) — тогда и ставим отметку. Карточки за краем экрана не трогаем, за страницей не следим
   function initMarks() {
-    if (!window.MutationObserver) return;
+    marks_on = !!field('tva_marks', true);
 
-    var pending = [];
-    var timer = null;
+    document.addEventListener('visible', function (e) {
+      var el = e.target;
 
-    var flush = function () {
-      timer = null;
-
-      var list = pending;
-
-      pending = [];
-
-      list.forEach(function (el) {
-        if (el.classList.contains('card')) {
-          if (el.card_data) decorate(el);
-        } else if (el.querySelectorAll) {
-          var cards = el.querySelectorAll('.card');
-
-          for (var i = 0; i < cards.length; i++) {
-            if (cards[i].card_data) decorate(cards[i]);
-          }
-        }
-      });
-    };
-
-    new MutationObserver(function (records) {
-      if (!loggedIn() || !rates) return;
-
-      records.forEach(function (rec) {
-        for (var i = 0; i < rec.addedNodes.length; i++) {
-          if (rec.addedNodes[i].nodeType === 1) pending.push(rec.addedNodes[i]);
-        }
-      });
-
-      if (pending.length && !timer) timer = setTimeout(flush, 50);
-    }).observe(document.body, { childList: true, subtree: true });
+      if (rates && el && el.card_data && el.classList && el.classList.contains('card')) decorate(el);
+    }, true);
 
     if (loggedIn()) {
       ratesData();
@@ -2076,7 +2056,12 @@
       component: 'tva_anime',
       param: { name: 'tva_marks', type: 'trigger', default: true },
       field: { name: 'Отметки на постерах', description: '✓ — просмотрено, ▶ 16/24 — смотрю, а также отложено, запланировано, брошено' },
-      onChange: function () { setTimeout(decorateAll, 100); }
+      onChange: function () {
+        setTimeout(function () {
+          marks_on = !!field('tva_marks', true);
+          decorateAll();
+        }, 100);
+      }
     });
 
     Lampa.SettingsApi.addParam({
@@ -2106,13 +2091,18 @@
       '.tva-login__text{flex:1;min-width:14em;font-size:1.1em;line-height:1.4}' +
       '.tva-login__url{width:100%;font-size:.8em;opacity:.6;word-break:break-all}' +
       '.rate--shiki>div:first-child{color:#73b6ff}' +
-      '.tva-mark{position:absolute;top:.5em;right:.5em;z-index:2;display:flex;align-items:center;gap:.2em;padding:.25em .4em;border-radius:.5em;background:rgba(0,0,0,.7);color:#fff;font-size:.95em;font-weight:600;line-height:1}' +
-      '.tva-mark svg{width:1.1em;height:1.1em}' +
+      '.tva-mark{position:absolute;top:.5em;right:.5em;z-index:2;display:flex;align-items:center;height:1.5em;min-width:1.5em;padding:0 .4em;box-sizing:border-box;justify-content:center;border-radius:.4em;background:#3a3f4a;color:#fff;font-size:.9em;font-weight:700;line-height:1}' +
+      '.tva-mark::before{content:"";display:block;flex-shrink:0}' +
+      '.tva-mark:not(:empty)::before{margin-right:.3em}' +
       '.tva-mark--c{background:#2e9d4c}' +
+      '.tva-mark--c::before{width:.3em;height:.6em;margin-top:-.15em;border:solid #fff;border-width:0 .17em .17em 0;transform:rotate(45deg)}' +
       '.tva-mark--w{background:#2f7de1}' +
+      '.tva-mark--w::before{border-left:.5em solid #fff;border-top:.32em solid transparent;border-bottom:.32em solid transparent}' +
       '.tva-mark--h{background:#c7861b}' +
-      '.tva-mark--p{background:rgba(0,0,0,.7)}' +
-      '.tva-mark--d{background:rgba(90,90,90,.85)}' +
+      '.tva-mark--h::before{width:.16em;height:.6em;border-left:.17em solid #fff;border-right:.17em solid #fff}' +
+      '.tva-mark--p::before{width:0;height:.42em;border:solid #fff;border-width:0 .27em .27em;border-bottom-color:transparent}' +
+      '.tva-mark--d{background:#5a5a5a}' +
+      '.tva-mark--d::before{content:"\\00d7";font-size:1.4em;font-weight:400;line-height:.7}' +
       '</style>');
   }
 
