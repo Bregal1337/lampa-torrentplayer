@@ -8,7 +8,7 @@
   // Карточки открываются обычной карточкой TMDB, поэтому кнопка «Торренты» работает как всегда.
   // ---------------------------------------------------------------------------
 
-  var VERSION = '1.3.2';
+  var VERSION = '1.4.0';
   var HOSTS = ['https://shikimori.io', 'https://shikimori.rip'];
   var REDIRECT = 'urn:ietf:wg:oauth:2.0:oob';
   var PAGE = 20;
@@ -349,7 +349,46 @@
 
       if (!card.shiki) return Lampa.Api.sources.tmdb.full(params, oncomplite, onerror);
 
-      findTmdb(card.shiki, function (found) {
+      // Ответа нет ни так, ни так — не крутим загрузку вечно
+      var settled = false;
+      var guard = setTimeout(function () {
+        if (settled) return;
+
+        settled = true;
+        Lampa.Noty.show('Карточка «' + (card.name || card.title) + '» не загрузилась — открываю поиск');
+        onerror();
+        openSearch();
+      }, 30000);
+      var complete = function (data) {
+        if (settled) return;
+
+        settled = true;
+        clearTimeout(guard);
+        oncomplite(data);
+      };
+      var error = function () {
+        if (settled) return;
+
+        settled = true;
+        clearTimeout(guard);
+        onerror.apply(this, arguments);
+      };
+      var openSearch = function () {
+        setTimeout(function () {
+          Lampa.Activity.push({ url: '', title: 'Поиск', component: 'search', query: card.shiki.russian || card.shiki.name, page: 1 });
+        }, 300);
+      };
+      var notFound = function () {
+        if (settled) return;
+
+        Lampa.Noty.show('«' + (card.name || card.title) + '» не найдено на TMDB — открываю поиск');
+        error();
+        openSearch();
+      };
+
+      var open = function (found) {
+        if (settled) return;
+
         params.id = found.id;
         params.method = found.method;
         params.source = 'tmdb';
@@ -360,14 +399,20 @@
         rating_cache[found.method + found.id] = card.vote_average;
         cacheSet('tva_known', found.method + found.id, 1, 500);
 
-        Lampa.Api.sources.tmdb.full(params, oncomplite, onerror);
-      }, function () {
-        Lampa.Noty.show('«' + (card.name || card.title) + '» не найдено на TMDB — открываю поиск');
-        onerror();
-        setTimeout(function () {
-          Lampa.Activity.push({ url: '', title: 'Поиск', component: 'search', query: card.shiki.russian || card.shiki.name, page: 1 });
-        }, 300);
-      });
+        Lampa.Api.sources.tmdb.full(params, complete, error);
+      };
+
+      findTmdb(card.shiki, function (found) {
+        checkTmdb(found, open, function () {
+          // Карты ведут на карточку, которой на TMDB нет, — ищем по названию и запоминаем найденное
+          console.log('Anime', 'TMDB ' + found.method + '/' + found.id + ' нет, ищу «' + card.shiki.name + '» по названию');
+
+          searchTmdb(card.shiki, function (again) {
+            cacheSet('tva_map2', card.shiki.id, again, 500);
+            checkTmdb(again, open, notFound);
+          }, notFound);
+        });
+      }, notFound);
     },
     seasons: function (tv, from, oncomplite) {
       Lampa.Api.sources.tmdb.seasons(tv, from, oncomplite);
@@ -475,6 +520,25 @@
     Lampa.Storage.set(name, all);
   }
 
+  // Карта (Fribb/anime-lists) иногда ведёт на карточку TMDB, которой больше нет — например, дубль,
+  // слитый с основной («Киберпанк: Бегущие по краю 2» → 326788). Проверяем один раз: 404 — карточки нет;
+  // другая ошибка (нет связи) — открываем как есть, Lampa сама покажет ошибку
+  function checkTmdb(found, ok, missing) {
+    var key = found.method + found.id;
+
+    if (cacheGet('tva_ok', key)) return ok(found);
+
+    tmdbGet(found.method + '/' + found.id, function (json) {
+      if (json && json.id) {
+        cacheSet('tva_ok', key, 1, 1000);
+        ok(found);
+      } else missing();
+    }, function (a) {
+      if (a && a.status === 404) missing();
+      else ok(found);
+    });
+  }
+
   function findTmdb(s, ok, fail) {
     var hit = cacheGet('tva_map2', s.id);
 
@@ -502,7 +566,10 @@
     var year = parseInt((s.aired || '').slice(0, 4), 10) || 0;
     // Японское название — самое точное: на TMDB оно обычно и есть оригинальное
     var full = [s.japanese, s.english, s.name, s.russian].filter(function (n, i, a) { return n && a.indexOf(n) === i; });
-    var bases = [baseName(s.english), baseName(s.name), baseName(s.russian)].filter(function (n, i, a) { return n && a.indexOf(n) === i && full.indexOf(n) < 0; });
+    // Сначала название без номера сезона, но с подзаголовком («Cyberpunk: Edgerunners 2» → «Cyberpunk: Edgerunners»),
+    // потом без подзаголовка («Jujutsu Kaisen: Shibuya Jihen» → «Jujutsu Kaisen»)
+    var unnumbered = function (n) { return (n || '').replace(/\s+(?:\d{1,2}|ii|iii|iv)$/i, '').trim(); };
+    var bases = [unnumbered(s.english), unnumbered(s.name), unnumbered(s.russian), baseName(s.english), baseName(s.name), baseName(s.russian)].filter(function (n, i, a) { return n && a.indexOf(n) === i && full.indexOf(n) < 0; });
     var wanted = full.concat(bases).map(normName);
 
     var yearOf = function (x) { return parseInt(((method === 'movie' ? x.release_date : x.first_air_date) || '').slice(0, 4), 10) || 0; };
@@ -583,15 +650,42 @@
     return { id: +a.id, name: a.name, russian: a.russian, kind: a.kind, episodes: a.episodes || a.episodesAired || 0, aired: a.airedOn && a.airedOn.date || '', score: a.score };
   }
 
+  // У карточки TMDB сезонов больше, чем нашлось в карте (новый сезон ещё не в карте или в карте ошибка:
+  // «Киберпанк: Бегущие по краю 2» записан на несуществующую карточку) — недостающие сезоны берём
+  // из франшизы Shikimori по порядку выхода. Только номера, которых нет и которые есть у карточки
+  function fillSeasons(movie, items, franchise, with_ona, done) {
+    var total = movie.number_of_seasons || (movie.seasons || []).filter(function (x) { return x.season_number > 0; }).length;
+    var have = {};
+
+    items.forEach(function (e) { have[e.season] = true; });
+
+    if (!franchise || !total || Object.keys(have).length >= total) return done();
+
+    franchiseEntries(franchise, with_ona, function (list) {
+      list.forEach(function (e, i) {
+        var n = i + 1;
+
+        if (n <= total && !have[n] && !items.some(function (x) { return x.id === e.id; })) {
+          e.season = n;
+          items.push(e);
+          have[n] = true;
+        }
+      });
+
+      items.sort(function (a, b) { return (a.season - b.season) || byAired(a, b); });
+      done();
+    }, done);
+  }
+
   // Карточка TMDB (аниме) → тайтлы Shikimori по сезонам: { id, score, episodes, seasons: [{ id, season, episodes, aired, … }] }
   function shikiForTmdb(movie, ok, fail) {
     var key = tmdbKey(movie);
-    var hit = cacheGet('tva_tmdb2', key);
+    var hit = cacheGet('tva_tmdb3', key);
 
     if (hit) return ok(hit);
 
     var save = function (entry) {
-      cacheSet('tva_tmdb2', key, entry, 300);
+      cacheSet('tva_tmdb3', key, entry, 300);
       ok(entry);
     };
 
@@ -618,8 +712,10 @@
         items.sort(function (a, b) { return (a.season - b.season) || byAired(a, b); });
 
         var main = items[0];
+        var franchise = ((data.animes || []).filter(function (a) { return +a.id === main.id; })[0] || {}).franchise;
+        var done = function () { save({ id: main.id, score: main.score, episodes: main.episodes, seasons: items, from: 'map' }); };
 
-        save({ id: main.id, score: main.score, episodes: main.episodes, seasons: items, from: 'map' });
+        fillSeasons(movie, items, franchise, main.kind === 'ona', done);
       }, function () { searchShiki(movie, save, fail); }, { priority: true });
     });
   }
@@ -709,7 +805,7 @@
 
     if (rating_cache[key]) return rating_cache[key];
 
-    var hit = cacheGet('tva_tmdb2', key);
+    var hit = cacheGet('tva_tmdb3', key);
 
     return hit && hit.score || 0;
   };

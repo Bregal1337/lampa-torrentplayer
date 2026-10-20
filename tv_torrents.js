@@ -7,7 +7,7 @@
   if (window.tvt_plugin_ready) return;
   window.tvt_plugin_ready = true;
 
-  var VERSION = '1.11.1';
+  var VERSION = '1.12.0';
 
   // ---------------------------------------------------------------------------
   // Разбор названия раздачи
@@ -1984,6 +1984,83 @@
     return splitAbsolute(split, 0, le) || { season: ls || 1, episode: le };
   }
 
+  // Сериал без разрезанных сезонов: раздача одного сезона («2 сезон», «[S02]», «Название 2»), а в именах
+  // файлов сезона нет («Cyberpunk Edgerunners - 01.mkv») — Lampa считает их 1-м сезоном, показывает
+  // серии 1-го сезона и пишет прогресс туда же. Все файлы такой раздачи — её сезон. Раздача нескольких
+  // сезонов со сквозной нумерацией (1–20) — раскладываем по числу серий сезонов: 11–20 — это 2-й
+  function releaseSeasonFile(movie, r, path, ls, le) {
+    if (!le || pathSeason(path) || !r.seasons.length) return null;
+
+    if (r.seasons.length === 1) return r.seasons[0] !== ls ? { season: r.seasons[0], episode: le } : null;
+
+    var list = r.seasons.slice().sort(function (a, b) { return a - b; });
+    var counts = {};
+
+    realSeasons(movie).forEach(function (s) { counts[s.season_number] = s.episode_count; });
+
+    // Номер не больше, чем серий в первом сезоне раздачи, — нумерация может быть и по сезонам, не трогаем
+    if (!counts[list[0]] || le <= counts[list[0]]) return null;
+
+    var e = le;
+
+    for (var i = 0; i < list.length; i++) {
+      var cnt = counts[list[i]];
+
+      if (!cnt) return null;
+      if (e <= cnt) return list[i] !== ls || e !== le ? { season: list[i], episode: e } : null;
+
+      e -= cnt;
+    }
+
+    return null;
+  }
+
+  // Серии сезонов, которые уже загружал экран сериала: по ним названия и кадры в списке файлов
+  var episode_cache = {};
+
+  // Только что вышедший сезон: русские названия и описания в API TMDB появляются позже, чем на сайте
+  // («Эпизод 1…10», описаний нет), английские — обычно сразу. Пока русских нет — берём английские
+  var PLACEHOLDER = /^(эпизод|серия|episode)\s*\d+$/i;
+
+  function englishFallback(movie, n, episodes, done) {
+    var empty = episodes.filter(function (ep) { return !ep.name || PLACEHOLDER.test(ep.name.trim()); });
+
+    if (!movie.id || !episodes.length || empty.length < episodes.length / 2) return done();
+
+    var finished = false;
+    var finish = function () {
+      if (finished) return;
+
+      finished = true;
+      clearTimeout(timer);
+      done();
+    };
+    var timer = setTimeout(finish, 6000);
+    var net = new Lampa.Reguest();
+
+    net.timeout(6000);
+    net.silent(Lampa.TMDB.api('tv/' + movie.id + '/season/' + n + '?api_key=' + Lampa.TMDB.key() + '&language=en-US'), function (json) {
+      var en = {};
+
+      (json && json.episodes || []).forEach(function (ep) { en[ep.episode_number] = ep; });
+
+      episodes.forEach(function (ep) {
+        var e = en[ep.episode_number];
+
+        if (!e) return;
+        if ((!ep.name || PLACEHOLDER.test(ep.name.trim())) && e.name && !PLACEHOLDER.test(e.name.trim())) ep.name = e.name;
+        if (!ep.overview && e.overview) ep.overview = e.overview;
+        if (!ep.still_path && e.still_path) ep.still_path = e.still_path;
+      });
+
+      finish();
+    }, finish);
+  }
+
+  function cachedEpisode(movie, s, e) {
+    return (episode_cache[movie.id + ':' + s] || []).filter(function (x) { return x.episode_number === e; })[0] || null;
+  }
+
   // Какую раздачу открыли последней: по ней понятно, какой это сезон, если в именах файлов его нет
   var torrent_ctx = null;
 
@@ -1996,27 +2073,32 @@
       return start.apply(this, arguments);
     };
 
-    // Lampa считает сезон по имени файла, а без него — первым. Для разрезанного сезона
-    // переставляем номер серии и прогресс у файла и его копии в плейлисте
+    // Lampa считает сезон по имени файла, а без него — первым. Для разрезанного сезона и для раздачи
+    // одного сезона без сезона в именах файлов переставляем сезон, серию и прогресс у файла и его копии
+    // в плейлисте, а в уже нарисованной плитке — название, кадр, сезон и дату
     Lampa.Listener.follow('torrent_file', function (e) {
       if (e.type !== 'render') return;
 
       var movie = e.params && e.params.movie;
-      var split = movie && season_splits[movie.id];
       var el = e.element;
 
-      if (!split || !el) return;
+      if (!movie || !movie.id || !el) return;
 
+      var split = season_splits[movie.id];
       var r = torrent_ctx && torrent_ctx.movie_id === movie.id ? torrent_ctx.r : { seasons: [] };
-      var to = splitFile(split, r, el.path, parseInt(el.season, 10) || 0, parseInt(el.episode, 10) || 0);
+      var ls = parseInt(el.season, 10) || 0;
+      var le = parseInt(el.episode, 10) || 0;
+      var to = split ? splitFile(split, r, el.path, ls, le) : releaseSeasonFile(movie, r, el.path, ls, le);
 
       if (!to) return;
 
       var moved = to.season != el.season || to.episode != el.episode;
       var view = moved ? episodeView(movie, to.season, to.episode) : null;
       var copy = (el.playlist || []).filter(function (p) { return p !== el && p.url === el.url; })[0];
-      var part = split.list.filter(function (p) { return p.season_number === to.season; })[0];
-      var ep = part && part.episodes[to.episode - 1];
+      var part = split && split.list.filter(function (p) { return p.season_number === to.season; })[0];
+      var ep = split ? part && part.episodes[to.episode - 1] : cachedEpisode(movie, to.season, to.episode);
+      var name = ep && ep.name || (moved ? 'Серия ' + to.episode : '');
+      var still = ep && ep.still_path ? Lampa.Api.img(ep.still_path) : moved && movie.backdrop_path ? Lampa.Api.img(movie.backdrop_path) : '';
 
       [el, copy].forEach(function (o) {
         if (!o) return;
@@ -2026,18 +2108,36 @@
           o.episode = to.episode;
           o.timeline = view;
           if (o.subtitle) o.subtitle = Lampa.Lang.translate('torrent_serial_episode') + ': ' + to.episode;
+          if (ep && ep.air_date && Lampa.Utils.parseTime) o.air_date = Lampa.Utils.parseTime(ep.air_date).full;
         }
 
         // Название и кадр Lampa взяла из сезона TMDB по номеру файла (или не нашла сезон) — ставим своей серии
-        if (ep && ep.name) {
-          o.title = o.fname = ep.name;
-          if (ep.still_path) o.img = o.thumbnail = Lampa.Api.img(ep.still_path);
-        }
+        if (name) o.title = o.fname = name;
+        if (still) o.img = o.thumbnail = still;
       });
 
-      var line = moved && e.item && e.item.find ? e.item.find('.time-line') : null;
+      var item = e.item && e.item.find ? e.item : null;
 
-      if (line && line.length) line.replaceWith(Lampa.Timeline.render(view));
+      if (!item) return;
+
+      if (moved) {
+        var line = item.find('.time-line');
+
+        if (line.length) line.replaceWith(Lampa.Timeline.render(view));
+
+        item.find('.torrent-serial__line b').first().text(to.season);
+        item.find('.torrent-serial__episode').text(to.episode);
+        if (el.air_date) item.find('.torrent-serial__line span').eq(1).text(Lampa.Lang.translate('torrent_serial_date') + ' - ' + el.air_date);
+      }
+
+      if (name) item.find('.torrent-serial__title').text(name);
+
+      if (still) {
+        var img = item.find('.torrent-serial__img');
+
+        img.attr('data-src', still);
+        if (img.attr('src')) img.attr('src', still);
+      }
     });
   }
 
@@ -2569,10 +2669,11 @@
     keep.forEach(function (f) { items.push(f); });
   }
 
-  function startAutoplay(el, movie, target, done) {
+  // missing — что делать, если нужной серии в раздаче не оказалось (экран сериала пробует другую раздачу)
+  function startAutoplay(el, movie, target, done, missing) {
     finishAutoplay();
 
-    autoplay = { target: target, movie: movie, files: [], picked: false, started: false, done: done, time: Date.now() };
+    autoplay = { target: target, movie: movie, files: [], picked: false, started: false, done: done, missing: missing, time: Date.now() };
 
     el.poster = movie.img;
     // TorrServer подписывает торрент по title, у результатов парсера есть только Title
@@ -2606,7 +2707,17 @@
       if (!t.movie) rememberSession(ap.movie, t, found.element.torrent_hash, ap.files);
       onlineSubs(ap, found.element, function () { found.item.trigger('hover:enter'); });
     } else {
+      var missing = !t.movie && ap.missing;
+
       finishAutoplay();
+
+      // Серии в файлах нет — закрываем список файлов и пробуем другую раздачу, а не оставляем человека в тупике
+      if (missing) {
+        Lampa.Modal.close();
+        Lampa.Controller.toggle('content');
+        return missing();
+      }
+
       Lampa.Noty.show(t.movie ? 'Не удалось выбрать файл — выберите вручную' : 'Серия ' + t.episode + ' не найдена в раздаче — выберите файл вручную');
     }
   }
@@ -3179,13 +3290,20 @@
     }
 
     function loadSeason(n, call) {
-      if (seasons_data[n]) return call();
+      if (seasons_data[n]) {
+        episode_cache[movie.id + ':' + n] = seasons_data[n].episodes;
+        return call();
+      }
 
       Lampa.Api.seasons(movie, [n], function (data) {
         var json = data && (data[n] || data[n + '']);
+        var episodes = tmdbEpisodes(json);
 
-        seasons_data[n] = { episodes: tmdbEpisodes(json) };
-        call();
+        englishFallback(movie, n, episodes, function () {
+          seasons_data[n] = { episodes: episodes };
+          episode_cache[movie.id + ':' + n] = episodes;
+          call();
+        });
       });
     }
 
@@ -3281,6 +3399,8 @@
         var el = $('<div class="tvt-ep selector"><div class="tvt-ep__img"><img /><div class="tvt-ep__num"></div><div class="tvt-ep__go">▶</div><div class="tvt-bar"><div></div></div></div><div class="tvt-ep__body"><div class="tvt-ep__name"></div><div class="tvt-ep__meta"></div></div><div class="tvt-ep__state"></div></div>');
 
         if (ep.still_path) el.find('img').attr('src', Lampa.Api.img(ep.still_path, 'w300'));
+        // Кадра нет (сезон только вышел) — фон сериала, чтобы плитка не была пустой
+        else if (movie.backdrop_path) el.find('img').attr('src', Lampa.Api.img(movie.backdrop_path, 'w300'));
         else el.find('.tvt-ep__img').addClass('empty');
 
         el.attr('data-episode', e);
@@ -3621,13 +3741,35 @@
         saveTitlePrefs(movie, { last: { season: target.season, episode: target.episode, t: Date.now() } });
       }
 
+      launch(it, target, []);
+    };
+
+    // Запуск серии из раздачи. Серии в файлах не оказалось (раздача другого сезона, неполная) —
+    // пробуем следующую подходящую раздачу той же озвучки, потом любой; не больше трёх попыток
+    function launch(it, target, tried) {
+      tried.push(releaseKey(it));
+
       // Выбраны «Оригинал + субтитры», а в раздаче русских субтитров нет — их поищет OpenSubtitles
       target.want_subs = pick.voice === 't:sub' && !it.r.rus_subs;
 
       startAutoplay(it.el, movie, target, function () {
         _this.refresh();
-      });
-    };
+      }, serial ? function () {
+        var alt = releasesFor(target.season).filter(function (x) {
+          return tried.indexOf(releaseKey(x)) < 0 && coversEpisode(x, target.episode);
+        });
+        var same_voice = alt.filter(matchVoice(pick.voice));
+
+        alt = (same_voice.length ? same_voice : alt).sort(function (a, b) { return scoreRelease(b, true) - scoreRelease(a, true); });
+
+        if (!alt.length || tried.length >= 3) {
+          return Lampa.Noty.show('Серии ' + target.episode + ' нет в ' + (tried.length > 1 ? tried.length + ' раздачах' : 'этой раздаче') + ' — выберите раздачу в «Все раздачи»');
+        }
+
+        Lampa.Noty.show('Серии ' + target.episode + ' нет в этой раздаче — открываю другую');
+        launch(alt[0], target, tried);
+      } : null);
+    }
 
     // Прогресс изменился (плеер вернул позицию) — обновляем отметки на месте, не трогая фокус
     this.refresh = function () {
