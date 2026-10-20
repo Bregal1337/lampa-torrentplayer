@@ -8,7 +8,7 @@
   // Карточки открываются обычной карточкой TMDB, поэтому кнопка «Торренты» работает как всегда.
   // ---------------------------------------------------------------------------
 
-  var VERSION = '1.5.0';
+  var VERSION = '1.5.1';
   var HOSTS = ['https://shikimori.io', 'https://shikimori.rip'];
   var REDIRECT = 'urn:ietf:wg:oauth:2.0:oob';
   var PAGE = 20;
@@ -403,6 +403,13 @@
 
       if (!card.shiki) return Lampa.Api.sources.tmdb.full(params, oncomplite, onerror);
 
+      // Замеры — в консоль Lampa (меню → Консоль): что именно долго при открытии карточки
+      var t0 = Date.now();
+      var t_found = 0;
+      var trace = function (msg) {
+        console.log('Anime', 'открытие «' + (card.name || card.title) + '»: ' + msg);
+      };
+
       // Lampa ждёт от onerror объект ошибки (читает status.blocked) — без него экран карточки падает
       var settled = false;
       var attempt = 0;
@@ -437,10 +444,13 @@
         rating_cache[found.method + found.id] = card.vote_average;
         cacheSet('tva_known', found.method + found.id, 1, 500);
 
+        var t_open = Date.now();
+
         Lampa.Api.sources.tmdb.full(params, function (data) {
           if (settled || mine !== attempt) return;
 
           settled = true;
+          trace('карточка TMDB ' + found.method + '/' + found.id + ' загружена Lampa за ' + (Date.now() - t_open) + ' мс, всего ' + (Date.now() - t0) + ' мс');
           oncomplite(data);
         }, function (e) {
           if (settled || mine !== attempt) return;
@@ -455,8 +465,11 @@
 
         if (!verify) return;
 
+        var t_check = Date.now();
+
         checkTmdb(found, function () {
           checked = true;
+          trace('проверка, что карточка есть на TMDB: ' + (Date.now() - t_check) + ' мс');
 
           if (held && !settled && mine === attempt) {
             settled = true;
@@ -476,7 +489,14 @@
         });
       };
 
-      findTmdb(card.shiki, function (found) { open(found, true); }, notFound);
+      findTmdb(card.shiki, function (found) {
+        t_found = Date.now() - t0;
+        trace('сопоставление ' + t_found + ' мс — ' + last_find);
+        open(found, true);
+      }, function () {
+        trace('сопоставление не удалось за ' + (Date.now() - t0) + ' мс — ' + last_find);
+        notFound();
+      });
     },
     seasons: function (tv, from, oncomplite) {
       Lampa.Api.sources.tmdb.seasons(tv, from, oncomplite);
@@ -499,27 +519,37 @@
   var rating_cache = {};
 
   // kind: 'm' — по id Shikimori, 't' — по id TMDB
+  // Откуда взялся последний файл карты — для замеров в консоли при открытии карточки
+  var last_shard = null;
+
   function mapShard(kind, id, ok) {
     var name = kind + '/' + ('0' + (id % 100)).slice(-2);
     var key = 'tva_ms_' + name.replace('/', '');
+    var t0 = Date.now();
 
-    if (map_mem[name]) return ok(map_mem[name]);
+    if (map_mem[name]) {
+      last_shard = { name: name, from: 'память' };
+      return ok(map_mem[name]);
+    }
 
     try {
       var saved = JSON.parse(localStorage.getItem(key) || 'null');
 
       if (saved && Date.now() - saved.t < MAP_TTL) {
         map_mem[name] = saved.d;
+        last_shard = { name: name, from: 'устройство', ms: Date.now() - t0 };
         return ok(saved.d);
       }
     } catch (e) {}
 
     var xhr = new XMLHttpRequest();
     var done = false;
-    var finish = function (data) {
+    var stored = false;
+    var finish = function (data, how) {
       if (done) return;
 
       done = true;
+      last_shard = { name: name, from: how, ms: Date.now() - t0, stored: stored };
       ok(data);
     };
 
@@ -533,12 +563,16 @@
       if (xhr.status === 200 && data) {
         map_mem[name] = data;
 
-        try { localStorage.setItem(key, JSON.stringify({ t: Date.now(), d: data })); } catch (e) {}
+        try {
+          localStorage.setItem(key, JSON.stringify({ t: Date.now(), d: data }));
+          stored = true;
+        } catch (e) {}
       }
 
-      finish(data || {});
+      finish(data || {}, xhr.status === 200 && data ? 'сеть' : 'сеть, ошибка ' + xhr.status);
     };
-    xhr.onerror = xhr.ontimeout = function () { finish({}); };
+    xhr.onerror = function () { finish({}, 'сеть, нет связи'); };
+    xhr.ontimeout = function () { finish({}, 'сеть, нет ответа за 10 с'); };
     xhr.send();
   }
 
@@ -603,22 +637,41 @@
     });
   }
 
+  var last_find = '';
+  var search_calls = 0;
+
   function findTmdb(s, ok, fail) {
     var hit = cacheGet('tva_map2', s.id);
 
-    if (hit) return ok(hit);
+    if (hit) {
+      last_find = 'уже знаю';
+      return ok(hit);
+    }
 
     var save = function (found) {
       cacheSet('tva_map2', s.id, found, 500);
       ok(found);
     };
 
+    last_shard = null;
+
     mapShard('m', s.id, function (shard) {
       var m = shard[s.id];
+      var file = last_shard ? 'файл карты ' + last_shard.name + ': ' + last_shard.from + (last_shard.ms !== undefined ? ' ' + last_shard.ms + ' мс' : '') + (last_shard.stored === false ? ', НЕ сохранён на устройстве' : '') : '';
 
-      if (m) return save({ id: m[1], method: m[0] === 'm' ? 'movie' : 'tv', season: m[2] || 1, from: 'map' });
+      if (m) {
+        last_find = 'по карте (' + file + ')';
+        return save({ id: m[1], method: m[0] === 'm' ? 'movie' : 'tv', season: m[2] || 1, from: 'map' });
+      }
 
-      searchTmdb(s, save, fail);
+      search_calls = 0;
+      searchTmdb(s, function (found) {
+        last_find = 'поиск по названию, запросов к TMDB: ' + search_calls + ' (в карте нет; ' + file + ')';
+        save(found);
+      }, function () {
+        last_find = 'поиск по названию, запросов к TMDB: ' + search_calls + ' (в карте нет; ' + file + ')';
+        fail();
+      });
     });
   }
 
@@ -647,6 +700,8 @@
       var name = list.shift();
 
       if (!name) return sequel ? fail() : step(bases.slice(), true);
+
+      search_calls++;
 
       tmdbGet('search/' + method + '?query=' + encodeURIComponent(name), function (json) {
         var best = null;
