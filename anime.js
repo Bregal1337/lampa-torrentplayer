@@ -8,7 +8,7 @@
   // Карточки открываются обычной карточкой TMDB, поэтому кнопка «Торренты» работает как всегда.
   // ---------------------------------------------------------------------------
 
-  var VERSION = '1.1.0';
+  var VERSION = '1.2.0';
   var HOSTS = ['https://shikimori.io', 'https://shikimori.rip'];
   var REDIRECT = 'urn:ietf:wg:oauth:2.0:oob';
   var PAGE = 20;
@@ -101,9 +101,19 @@
     xhr.send(o.body || null);
   }
 
-  // Очередь: между запросами не меньше 250 мс. Сайт недоступен — пробуем зеркало
+  // Очередь: между запросами не меньше 250 мс. Сайт недоступен — пробуем зеркало.
+  // То, чего ждёт человек (открыть карточку, статус), идёт вперёд строк главной
   function shiki(o, ok, fail) {
-    queue.push({ o: o, ok: ok, fail: fail || function () {} });
+    var job = { o: o, ok: ok, fail: fail || function () {} };
+
+    if (o.priority) {
+      var i = 0;
+
+      while (i < queue.length && queue[i].o.priority) i++;
+
+      queue.splice(i, 0, job);
+    } else queue.push(job);
+
     pump();
   }
 
@@ -150,7 +160,7 @@
     if (!opts.fresh && hit && Date.now() - hit.t < 20 * 60000) return ok(hit.data);
 
     var send = function (token) {
-      shiki({ method: 'POST', path: '/api/graphql', body: JSON.stringify({ query: query }), type: 'application/json', token: token }, function (json) {
+      shiki({ method: 'POST', path: '/api/graphql', body: JSON.stringify({ query: query }), type: 'application/json', token: token, priority: !!opts.priority }, function (json) {
         if (!json || !json.data) return (fail || function () {})(0, json && json.errors ? JSON.stringify(json.errors) : 'пустой ответ');
 
         cache[key] = { t: Date.now(), data: json.data };
@@ -348,6 +358,7 @@
         if (found.season && window.tvt_api && tvt_api.openSeason) tvt_api.openSeason(found.id, found.season);
 
         rating_cache[found.method + found.id] = card.vote_average;
+        cacheSet('tva_known', found.method + found.id, 1, 500);
 
         Lampa.Api.sources.tmdb.full(params, oncomplite, onerror);
       }, function () {
@@ -368,9 +379,63 @@
   // ---------------------------------------------------------------------------
   // Shikimori ↔ TMDB. На TMDB продолжения обычно — сезоны одного сериала
   // («Магическая битва 2» → «Магическая битва», 2 сезон), на Shikimori — отдельные тайтлы.
+  // Сначала — готовая карта (id Shikimori = id MyAnimeList, карта Fribb/anime-lists, сезоны в
+  // нумерации TVDB, как у трекеров), разбитая на маленькие файлы: нужен один, ~1,5 КБ.
+  // Нет в карте — поиск по названию.
   // ---------------------------------------------------------------------------
 
+  var MAP_BASE = 'https://bregal1337.github.io/anime-map/';
+  var MAP_TTL = 7 * 86400000;
+  var map_mem = {};
   var rating_cache = {};
+
+  // kind: 'm' — по id Shikimori, 't' — по id TMDB
+  function mapShard(kind, id, ok) {
+    var name = kind + '/' + ('0' + (id % 100)).slice(-2);
+    var key = 'tva_ms_' + name.replace('/', '');
+
+    if (map_mem[name]) return ok(map_mem[name]);
+
+    try {
+      var saved = JSON.parse(localStorage.getItem(key) || 'null');
+
+      if (saved && Date.now() - saved.t < MAP_TTL) {
+        map_mem[name] = saved.d;
+        return ok(saved.d);
+      }
+    } catch (e) {}
+
+    var xhr = new XMLHttpRequest();
+    var done = false;
+    var finish = function (data) {
+      if (done) return;
+
+      done = true;
+      ok(data);
+    };
+
+    xhr.open('GET', (field('tva_map_base', '') || MAP_BASE) + name + '.json', true);
+    xhr.timeout = 10000;
+    xhr.onload = function () {
+      var data = null;
+
+      try { data = JSON.parse(xhr.responseText); } catch (e) {}
+
+      if (xhr.status === 200 && data) {
+        map_mem[name] = data;
+
+        try { localStorage.setItem(key, JSON.stringify({ t: Date.now(), d: data })); } catch (e) {}
+      }
+
+      finish(data || {});
+    };
+    xhr.onerror = xhr.ontimeout = function () { finish({}); };
+    xhr.send();
+  }
+
+  function tmdbKey(movie) {
+    return (movie.original_name || movie.number_of_seasons || movie.first_air_date ? 'tv' : 'movie') + movie.id;
+  }
 
   function tmdbGet(path, ok, fail) {
     var net = new Lampa.Reguest();
@@ -386,66 +451,102 @@
       .replace(/\s*[:：].*$/, '').replace(/\s*第\d+期.*$/, '').replace(/\s+\d+$/, '').trim();
   }
 
+  function normName(n) {
+    return (n || '').toLowerCase().replace(/[^a-zа-яё0-9぀-ヿ一-鿿]+/g, '');
+  }
+
   function isAnimeTmdb(x) {
     return (x.genre_ids || []).indexOf(16) >= 0 && (!x.origin_country || !x.origin_country.length || x.origin_country.indexOf('JP') >= 0 || x.original_language === 'ja');
   }
 
+  function cacheGet(name, key) {
+    return readJson(name)[key];
+  }
+
+  function cacheSet(name, key, value, limit) {
+    var all = readJson(name);
+
+    all[key] = value;
+
+    var keys = Object.keys(all);
+
+    if (keys.length > limit) delete all[keys[0]];
+
+    Lampa.Storage.set(name, all);
+  }
+
   function findTmdb(s, ok, fail) {
-    var map = readJson('tva_map');
+    var hit = cacheGet('tva_map2', s.id);
 
-    if (map[s.id]) return ok(map[s.id]);
-
-    var method = s.kind === 'movie' ? 'movie' : 'tv';
-    var year = parseInt((s.aired || '').slice(0, 4), 10) || 0;
-    var names = [baseName(s.english), baseName(s.name), baseName(s.russian), s.japanese].filter(function (n, i, a) { return n && a.indexOf(n) === i; });
+    if (hit) return ok(hit);
 
     var save = function (found) {
-      map = readJson('tva_map');
-      map[s.id] = found;
-
-      var keys = Object.keys(map);
-
-      if (keys.length > 500) delete map[keys[0]];
-
-      Lampa.Storage.set('tva_map', map);
+      cacheSet('tva_map2', s.id, found, 500);
       ok(found);
     };
 
-    var tryName = function () {
-      var name = names.shift();
+    mapShard('m', s.id, function (shard) {
+      var m = shard[s.id];
 
-      if (!name) return fail();
+      if (m) return save({ id: m[1], method: m[0] === 'm' ? 'movie' : 'tv', season: m[2] || 1, from: 'map' });
 
-      tmdbGet('search/' + method + '?query=' + encodeURIComponent(name), function (json) {
-        var list = (json && json.results || []).filter(isAnimeTmdb);
-        var best = null;
+      searchTmdb(s, save, fail);
+    });
+  }
 
-        if (method === 'movie') {
-          list.forEach(function (x) {
-            var y = parseInt((x.release_date || '').slice(0, 4), 10) || 0;
+  // Поиск на TMDB, если в карте тайтла нет. Сначала полное название и год — так находятся ремейки
+  // и отдельные сериалы («One Piece Log: Fish-Man Island Saga»), потом название без «Season 2» и
+  // подзаголовка — продолжение как сезон сериала, начавшегося раньше
+  function searchTmdb(s, ok, fail) {
+    var method = s.kind === 'movie' ? 'movie' : 'tv';
+    var year = parseInt((s.aired || '').slice(0, 4), 10) || 0;
+    // Японское название — самое точное: на TMDB оно обычно и есть оригинальное
+    var full = [s.japanese, s.english, s.name, s.russian].filter(function (n, i, a) { return n && a.indexOf(n) === i; });
+    var bases = [baseName(s.english), baseName(s.name), baseName(s.russian)].filter(function (n, i, a) { return n && a.indexOf(n) === i && full.indexOf(n) < 0; });
+    var wanted = full.concat(bases).map(normName);
 
-            if (!best && (!year || !y || Math.abs(y - year) <= 1)) best = x;
-          });
-        } else {
-          // Сериал TMDB начался не позже этого тайтла (продолжение — его сезон)
-          list.forEach(function (x) {
-            var y = parseInt((x.first_air_date || '').slice(0, 4), 10) || 0;
+    var yearOf = function (x) { return parseInt(((method === 'movie' ? x.release_date : x.first_air_date) || '').slice(0, 4), 10) || 0; };
+    var nameScore = function (x) {
+      var n = [normName(x.name || x.title), normName(x.original_name || x.original_title)];
 
-            if (!best && (!year || !y || y <= year + 1)) best = x;
-          });
-        }
-
-        if (!best) return tryName();
-
-        if (method === 'movie') return save({ id: best.id, method: 'movie' });
-
-        franchiseSeason(s, function (season) {
-          save({ id: best.id, method: 'tv', season: season });
-        });
-      }, tryName);
+      return wanted.some(function (w) { return w && n.indexOf(w) >= 0; }) ? 3 : 0;
     };
 
-    tryName();
+    var step = function (list, sequel) {
+      var name = list.shift();
+
+      if (!name) return sequel ? fail() : step(bases.slice(), true);
+
+      tmdbGet('search/' + method + '?query=' + encodeURIComponent(name), function (json) {
+        var best = null;
+        var best_score = -1;
+
+        // Жанр «Анимация» на TMDB проставлен не везде — при точном совпадении названия он не нужен
+        (json && json.results || []).filter(function (x) { return isAnimeTmdb(x) || nameScore(x) >= 3; }).forEach(function (x, i) {
+          var y = yearOf(x);
+          var score = nameScore(x) - i * 0.1;
+
+          if (!sequel) {
+            if (!year || !y || Math.abs(y - year) <= 1) score += 3;
+            else return;
+          } else if (year && y && y > year + 1) return;
+
+          if (score > best_score) {
+            best_score = score;
+            best = x;
+          }
+        });
+
+        if (!best) return step(list, sequel);
+
+        if (method === 'movie') return ok({ id: best.id, method: 'movie' });
+        if (!sequel) return ok({ id: best.id, method: 'tv', season: 1 });
+
+        franchiseSeason(s, function (season) { ok({ id: best.id, method: 'tv', season: season }); });
+      }, function () { step(list, sequel); });
+    };
+
+    step(full.slice(), false);
   }
 
   // Какой по счёту это сезон в франшизе: TV по дате выхода (ONA — только если сам тайтл ONA:
@@ -462,39 +563,72 @@
 
   function franchiseEntries(franchise, with_ona, ok, fail) {
     gql('{ animes(franchise: ' + arg(franchise) + ', kind: "tv,ona", limit: 30, order: aired_on, censored: true) { ' + ANIME_FIELDS + ' } }', function (data) {
-      var all = (data.animes || []).filter(function (a) { return a.airedOn && a.airedOn.date; }).map(function (a) {
-        return { id: +a.id, name: a.name, russian: a.russian, kind: a.kind, episodes: a.episodes || a.episodesAired || 0, aired: a.airedOn.date, score: a.score };
-      });
+      var all = (data.animes || []).filter(function (a) { return a.airedOn && a.airedOn.date; }).map(entryOf);
       var tv = all.filter(function (a) { return a.kind === 'tv'; });
       var list = with_ona || !tv.length ? all : tv;
 
       list.sort(function (a, b) { return a.aired < b.aired ? -1 : 1; });
       ok(list);
-    }, fail);
+    }, fail, { priority: true });
   }
 
-  // Карточка TMDB (аниме) → тайтлы Shikimori по сезонам. Кешируем
+  // По дате выхода; без даты (ещё не вышло) — в конец
+  function byAired(a, b) {
+    if (!a.aired !== !b.aired) return a.aired ? -1 : 1;
+
+    return a.aired < b.aired ? -1 : a.aired > b.aired ? 1 : 0;
+  }
+
+  function entryOf(a) {
+    return { id: +a.id, name: a.name, russian: a.russian, kind: a.kind, episodes: a.episodes || a.episodesAired || 0, aired: a.airedOn && a.airedOn.date || '', score: a.score };
+  }
+
+  // Карточка TMDB (аниме) → тайтлы Shikimori по сезонам: { id, score, episodes, seasons: [{ id, season, episodes, aired, … }] }
   function shikiForTmdb(movie, ok, fail) {
-    var key = (movie.original_name || movie.name ? 'tv' : 'movie') + movie.id;
-    var map = readJson('tva_tmdb');
+    var key = tmdbKey(movie);
+    var hit = cacheGet('tva_tmdb2', key);
 
-    if (map[key]) return ok(map[key]);
-
-    var tv = !!(movie.original_name || movie.number_of_seasons);
-    var year = parseInt(((tv ? movie.first_air_date : movie.release_date) || '').slice(0, 4), 10) || 0;
-    var names = [movie.name || movie.title, movie.original_name || movie.original_title].filter(function (n, i, a) { return n && a.indexOf(n) === i; });
+    if (hit) return ok(hit);
 
     var save = function (entry) {
-      map = readJson('tva_tmdb');
-      map[key] = entry;
-
-      var keys = Object.keys(map);
-
-      if (keys.length > 300) delete map[keys[0]];
-
-      Lampa.Storage.set('tva_tmdb', map);
+      cacheSet('tva_tmdb2', key, entry, 300);
       ok(entry);
     };
+
+    mapShard('t', movie.id, function (shard) {
+      var list = shard[(key.indexOf('tv') === 0 ? 't' : 'm') + movie.id];
+
+      if (!list || !list.length) return searchShiki(movie, save, fail);
+
+      var seasons = {};
+
+      list.forEach(function (p) { seasons[p[0]] = p[1]; });
+
+      gql('{ animes(ids: ' + arg(list.map(function (p) { return p[0]; }).join(',')) + ', limit: 50, censored: false) { ' + ANIME_FIELDS + ' } }', function (data) {
+        var items = (data.animes || []).map(function (a) {
+          var e = entryOf(a);
+
+          e.season = seasons[e.id] || 0;
+
+          return e;
+        }).filter(function (e) { return e.season > 0 || key.indexOf('movie') === 0; });
+
+        if (!items.length) return searchShiki(movie, save, fail);
+
+        items.sort(function (a, b) { return (a.season - b.season) || byAired(a, b); });
+
+        var main = items[0];
+
+        save({ id: main.id, score: main.score, episodes: main.episodes, seasons: items, from: 'map' });
+      }, function () { searchShiki(movie, save, fail); }, { priority: true });
+    });
+  }
+
+  // Нет в карте — ищем на Shikimori по названию и году, сезоны — по франшизе
+  function searchShiki(movie, ok, fail) {
+    var tv = tmdbKey(movie).indexOf('tv') === 0;
+    var year = parseInt(((tv ? movie.first_air_date : movie.release_date) || '').slice(0, 4), 10) || 0;
+    var names = [movie.name || movie.title, movie.original_name || movie.original_title].filter(function (n, i, a) { return n && a.indexOf(n) === i; });
 
     var tryName = function () {
       var name = names.shift();
@@ -502,10 +636,9 @@
       if (!name) return fail();
 
       gql('{ animes(search: ' + arg(name) + ', limit: 10, kind: ' + arg(tv ? 'tv,ona' : 'movie') + ', censored: false) { ' + ANIME_FIELDS + ' } }', function (data) {
-        var list = data.animes || [];
         var best = null;
 
-        list.forEach(function (a) {
+        (data.animes || []).forEach(function (a) {
           var y = parseInt((a.airedOn && a.airedOn.date || '').slice(0, 4), 10) || 0;
 
           if (!best && (!year || !y || Math.abs(y - year) <= 1)) best = a;
@@ -513,25 +646,31 @@
 
         if (!best) return tryName();
 
-        var entry = { id: +best.id, score: best.score, franchise: best.franchise || '', episodes: best.episodes || 0 };
+        var entry = { id: +best.id, score: best.score, episodes: best.episodes || 0 };
 
-        if (!tv || !best.franchise) return save(entry);
+        if (!tv || !best.franchise) return ok(entry);
 
         franchiseEntries(best.franchise, best.kind === 'ona', function (seasons) {
           entry.seasons = seasons;
-          save(entry);
-        }, function () { save(entry); });
-      }, tryName);
+          ok(entry);
+        }, function () { ok(entry); });
+      }, tryName, { priority: true });
     };
 
     tryName();
   }
 
-  // Тайтл Shikimori для сезона (в нумерации раздач): по дате начала, иначе по порядку
+  // Тайтлы Shikimori для сезона (в нумерации раздач). Сезон бывает из нескольких тайтлов
+  // («Атака титанов», 3 сезон = часть 1 + часть 2) — тогда список частей по порядку
   function shikiForSeason(entry, season, air_date) {
     var list = entry.seasons || [];
 
-    if (!list.length) return season === 1 ? { id: entry.id, episodes: entry.episodes } : null;
+    if (!list.length) return season === 1 ? [{ id: entry.id, episodes: entry.episodes }] : [];
+
+    // Из карты: номер сезона известен. Части, которые ещё не вышли, — в конец
+    if (list[0].season) {
+      return list.filter(function (s) { return s.season === season; }).sort(byAired);
+    }
 
     if (air_date) {
       var t = Date.parse(air_date);
@@ -547,14 +686,17 @@
         }
       });
 
-      if (best && dist <= 60 * 86400000) return best;
+      if (best && dist <= 60 * 86400000) return [best];
     }
 
-    return list[season - 1] || null;
+    return list[season - 1] ? [list[season - 1]] : [];
   }
 
+  // Аниме: жанр «Анимация» и Япония — или карточку открывали из раздела «Аниме» (на TMDB жанр бывает не проставлен)
   function isAnimeMovie(movie) {
     var genres = (movie.genres || []).map(function (g) { return g.id; }).concat(movie.genre_ids || []);
+
+    if (movie.id && cacheGet('tva_known', tmdbKey(movie))) return true;
 
     return genres.indexOf(16) >= 0 && (movie.original_language === 'ja' || (movie.origin_country || []).indexOf('JP') >= 0 || (movie.production_countries || []).some(function (c) { return c.iso_3166_1 === 'JP'; }));
   }
@@ -563,13 +705,13 @@
   window.tvt_rating = function (movie) {
     if (!movie || !movie.id) return 0;
 
-    var key = (movie.original_name || movie.number_of_seasons ? 'tv' : 'movie') + movie.id;
+    var key = tmdbKey(movie);
 
     if (rating_cache[key]) return rating_cache[key];
 
-    var map = readJson('tva_tmdb');
+    var hit = cacheGet('tva_tmdb2', key);
 
-    return map[key] && map[key].score || 0;
+    return hit && hit.score || 0;
   };
 
   // Оценка Shikimori в строке оценок полной карточки
@@ -586,7 +728,7 @@
       shikiForTmdb(movie, function (entry) {
         if (!entry.score) return;
 
-        rating_cache[(movie.original_name || movie.number_of_seasons ? 'tv' : 'movie') + movie.id] = entry.score;
+        rating_cache[tmdbKey(movie)] = entry.score;
 
         var row = $(render).find('.full-start-new__rate-line, .full-start__rate-line').eq(0);
 
@@ -1060,7 +1202,7 @@
 
   function rateGet(target, ok, fail) {
     withToken(function (token) {
-      shiki({ method: 'GET', path: '/api/v2/user_rates?user_id=' + auth().user_id + '&target_id=' + target + '&target_type=Anime', token: token }, function (list) {
+      shiki({ priority: true, method: 'GET', path: '/api/v2/user_rates?user_id=' + auth().user_id + '&target_id=' + target + '&target_type=Anime', token: token }, function (list) {
         ok(Array.isArray(list) && list.length ? list[0] : null);
       }, fail);
     }, fail);
@@ -1069,20 +1211,20 @@
   function rateSave(target, rate, patch, ok, fail) {
     withToken(function (token) {
       if (rate && rate.id) {
-        shiki({ method: 'PATCH', path: '/api/v2/user_rates/' + rate.id, body: JSON.stringify({ user_rate: patch }), type: 'application/json', token: token }, ok, fail);
+        shiki({ priority: true, method: 'PATCH', path: '/api/v2/user_rates/' + rate.id, body: JSON.stringify({ user_rate: patch }), type: 'application/json', token: token }, ok, fail);
       } else {
         var body = { user_id: auth().user_id, target_id: target, target_type: 'Anime' };
 
         for (var k in patch) body[k] = patch[k];
 
-        shiki({ method: 'POST', path: '/api/v2/user_rates', body: JSON.stringify({ user_rate: body }), type: 'application/json', token: token }, ok, fail);
+        shiki({ priority: true, method: 'POST', path: '/api/v2/user_rates', body: JSON.stringify({ user_rate: body }), type: 'application/json', token: token }, ok, fail);
       }
     }, fail);
   }
 
   function rateDelete(rate, ok, fail) {
     withToken(function (token) {
-      shiki({ method: 'DELETE', path: '/api/v2/user_rates/' + rate.id, token: token }, ok, fail);
+      shiki({ priority: true, method: 'DELETE', path: '/api/v2/user_rates/' + rate.id, token: token }, ok, fail);
     }, fail);
   }
 
@@ -1140,7 +1282,7 @@
       if (list.length > 1) {
         Lampa.Select.show({
           title: 'Какой сезон?',
-          items: list.map(function (s, i) { return { title: (i + 1) + ' сезон — ' + (s.russian || s.name), subtitle: s.aired.slice(0, 4) + (s.episodes ? ' · ' + s.episodes + ' сер.' : ''), s: s }; }),
+          items: list.map(function (s, i) { return { title: (s.season || i + 1) + ' сезон — ' + (s.russian || s.name), subtitle: (s.aired || '').slice(0, 4) + (s.episodes ? ' · ' + s.episodes + ' сер.' : ''), s: s }; }),
           onBack: function () { Lampa.Controller.toggle(enabled); },
           onSelect: function (a) { statusMenu(a.s, a.s.russian || a.s.name, enabled); }
         });
@@ -1248,34 +1390,49 @@
     };
 
     shikiForTmdb(job.movie, function (entry) {
-      var target = shikiForSeason(entry, job.season.season, job.season.air_date);
+      var parts = shikiForSeason(entry, job.season.season, job.season.air_date);
+      var watched = job.season.watched;
+      var offset = 0;
 
-      if (!target) return next();
+      if (!parts.length) return next();
 
-      rateGet(target.id, function (rate) {
-        var watched = job.season.watched;
-        var total = target.episodes || job.season.episodes || 0;
+      // Сезон из нескольких частей: серии раскладываем по ним по порядку
+      var each = function (i) {
+        var part = parts[i];
 
-        if (rate && (rate.episodes || 0) >= watched) {
+        if (!part) {
           mark(watched);
+          cache = {};
           return next();
         }
 
-        var patch = { episodes: watched };
+        var last = i === parts.length - 1;
+        var total = part.episodes || (last ? job.season.episodes - offset : 0);
+        var n = Math.min(watched - offset, total || (watched - offset));
 
-        if (total && watched >= total) patch.status = 'completed';
-        else if (!rate || ['planned', 'on_hold', 'dropped'].indexOf(rate.status) >= 0) patch.status = 'watching';
+        offset += total || n;
 
-        rateSave(target.id, rate, patch, function () {
-          mark(watched);
-          cache = {};
-          console.log('Anime', 'Shikimori: ' + (target.russian || target.name || target.id) + ' — ' + watched + ' сер.');
-          next();
-        }, function (status, msg) {
-          console.log('Anime', 'Shikimori: не сохранилось', status, msg);
-          next();
-        });
-      }, function () { next(); });
+        if (n <= 0) return each(i + 1);
+
+        rateGet(part.id, function (rate) {
+          if (rate && (rate.episodes || 0) >= n && (rate.status === 'completed' || !total || n < total)) return each(i + 1);
+
+          var patch = { episodes: n };
+
+          if (total && n >= total) patch.status = 'completed';
+          else if (!rate || ['planned', 'on_hold', 'dropped'].indexOf(rate.status) >= 0) patch.status = 'watching';
+
+          rateSave(part.id, rate, patch, function () {
+            console.log('Anime', 'Shikimori: ' + (part.russian || part.name || part.id) + ' — ' + n + ' сер.');
+            each(i + 1);
+          }, function (status, msg) {
+            console.log('Anime', 'Shikimori: не сохранилось', status, msg);
+            next();
+          });
+        }, function () { next(); });
+      };
+
+      each(0);
     }, function () {
       mark(job.season.watched);
       next();
