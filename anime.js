@@ -8,7 +8,7 @@
   // Карточки открываются обычной карточкой TMDB, поэтому кнопка «Торренты» работает как всегда.
   // ---------------------------------------------------------------------------
 
-  var VERSION = '1.3.1';
+  var VERSION = '1.3.2';
   var HOSTS = ['https://shikimori.io', 'https://shikimori.rip'];
   var REDIRECT = 'urn:ietf:wg:oauth:2.0:oob';
   var PAGE = 20;
@@ -2131,7 +2131,7 @@
     console.log('Anime', 'started', VERSION);
   }
 
-  window.tva_api = { version: VERSION, login: login, phoneKeys: phoneKeys, phoneCode: phoneCode, parseKeys: parseKeys, exchange: function (code) { exchangeCode(code, clientKeys()); }, pullAuth: pullAuth, findTmdb: findTmdb, shikiForTmdb: shikiForTmdb, shikiForSeason: shikiForSeason, baseName: baseName, gql: gql, ratesRefresh: ratesRefresh, markFor: markFor, rates: function () { return rates; }, tmdbIndex: function () { return tmdb_index; } };
+  window.tva_api = { version: VERSION, login: login, phoneKeys: phoneKeys, phoneCode: phoneCode, parseKeys: parseKeys, exchange: function (code) { exchangeCode(code, clientKeys()); }, pullAuth: pullAuth, findTmdb: findTmdb, shikiForTmdb: shikiForTmdb, shikiForSeason: shikiForSeason, baseName: baseName, gql: gql, ratesRefresh: ratesRefresh, markFor: markFor, rates: function () { return rates; }, tmdbIndex: function () { return tmdb_index; }, qrWindow: qrWindow };
 
   if (window.appready) start();
   else {

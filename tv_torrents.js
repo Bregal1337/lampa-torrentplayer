@@ -7,7 +7,7 @@
   if (window.tvt_plugin_ready) return;
   window.tvt_plugin_ready = true;
 
-  var VERSION = '1.9.0';
+  var VERSION = '1.10.0';
 
   // ---------------------------------------------------------------------------
   // Разбор названия раздачи
@@ -488,8 +488,9 @@
 
     subsFromTitle(lower, r);
 
-    // Оригинал + субтитры: дорожка на языке оригинала и русские субтитры (по ffprobe или по названию)
-    if (r.orig_audio && r.rus_subs) addUnique(r.types, 'sub');
+    // Оригинал + субтитры: дорожка на языке оригинала и русские субтитры (по ffprobe или по названию).
+    // Есть ключ OpenSubtitles — подходит и раздача без субтитров, их найдём перед запуском
+    if (r.orig_audio && (r.rus_subs || osReady())) addUnique(r.types, 'sub');
 
     if (!r.types.length && !r.studios.length && /\beng\b|original|оригинал/.test(lower)) r.types.push('orig');
 
@@ -1944,6 +1945,456 @@
     });
   }
 
+  // ---------------------------------------------------------------------------
+  // Субтитры из раздачи. Lampa прикладывает к серии только файлы, в имени которых есть полное
+  // имя видео, а в аниме-раздачах субтитры часто названы иначе («Subs/[Group] Title - 05.ass»
+  // к «[Other] Title - 05 (1080p) [CRC].mkv»). Подбираем по номеру серии и сезону, русские —
+  // первыми; приложение Lampa передаёт их в MX Player вместе с плейлистом
+  // ---------------------------------------------------------------------------
+
+  var SUB_EXT = ['ass', 'ssa', 'srt', 'vtt'];
+
+  function fileExt(path) {
+    return ((path || '').split('.').pop() || '').toLowerCase();
+  }
+
+  // Номер серии из имени файла: убираем CRC, год, разрешение, кодеки — остаётся номер
+  function fileEpisodeNo(path) {
+    var n = (path || '').split('/').pop().replace(/\.[^.]+$/, '').toLowerCase().replace(/_/g, ' ');
+
+    n = n.replace(/\[[0-9a-f]{8}\]/g, ' ')
+      .replace(/(?:19|20)\d{2}(?!\d)/g, ' ')
+      .replace(/\b\d{3,4}[pi]\b|\b[xh]\.?26[45]\b|\b10\s?-?bit\b|\b(?:aac|ac3|eac3|flac|dts|opus)\s?\d?(?:\.\d)?\b|\b\d\.\d\b|\bv\d\b/g, ' ');
+
+    var m = n.match(/s\d{1,2}\s*e(\d{1,4})/) || n.match(/\be(?:p|pisode)?\s*\.?\s*(\d{1,4})\b/) || n.match(/(\d{1,4})\s*(?:серия|эпизод|話)/) ||
+      n.match(/第\s*(\d{1,4})/) || n.match(/\s[-–]\s*(\d{1,4})(?!\d)/) || n.match(/\[(\d{1,4})\]/);
+
+    if (m) return +m[1];
+
+    var all = n.match(/\d{1,4}/g);
+
+    return all ? +all[all.length - 1] : 0;
+  }
+
+  // 2 — русские, 0 — язык не указан (в русских раздачах это почти всегда русские), -1 — другой язык
+  function subLang(path) {
+    var p = (path || '').toLowerCase();
+
+    if (/(?:^|[^a-z])(?:rus|ru|russian)(?:[^a-z]|$)|рус/.test(p)) return 2;
+    if (/(?:^|[^a-z])(?:eng|en|english|ukr|ua|jpn|jap|ja)(?:[^a-z]|$)|англ|укр/.test(p)) return -1;
+
+    return 0;
+  }
+
+  function subLabel(path, lang) {
+    var parts = path.split('/');
+    var file = parts.pop().replace(/\.[^.]+$/, '');
+    var dirs = parts.slice(1).join(' / ');
+    var text = (lang === 2 ? 'Рус' : lang === -1 ? 'Другой язык' : 'Субтитры') + ' · ' + (dirs || file);
+
+    if (/надпис|sign/i.test(path)) text += ' (надписи)';
+
+    return text.length > 60 ? text.slice(0, 57) + '…' : text;
+  }
+
+  // Субтитры к видеофайлу: та же серия, тот же сезон (если он есть в пути), русские и полные — первыми
+  function releaseSubs(video, files, single, url_of) {
+    var ep = fileEpisodeNo(video.path);
+    var season = pathSeason(video.path);
+    var dir = video.path.split('/').slice(0, -1).join('/').toLowerCase();
+
+    if (!ep && !single) return [];
+
+    var list = files.filter(function (f) {
+      if (SUB_EXT.indexOf(fileExt(f.path)) < 0) return false;
+      if (single) return true;
+      if (fileEpisodeNo(f.path) !== ep) return false;
+
+      var s = pathSeason(f.path);
+
+      return !s || !season || s === season;
+    }).map(function (f) {
+      var lang = subLang(f.path);
+      var fdir = f.path.split('/').slice(0, -1).join('/').toLowerCase();
+      var near = fdir.indexOf(dir) === 0 ? 1 : 0;
+
+      return { f: f, lang: lang, score: lang * 10 + near * 3 - (/надпис|sign/i.test(f.path) ? 5 : 0) };
+    });
+
+    if (list.some(function (x) { return x.lang >= 0; })) list = list.filter(function (x) { return x.lang >= 0; });
+
+    return list.sort(function (a, b) { return b.score - a.score; }).slice(0, 4).map(function (x) {
+      return { label: subLabel(x.f.path, x.lang), url: url_of(x.f) };
+    });
+  }
+
+  function initSubs() {
+    Lampa.Listener.follow('torrent_file', function (e) {
+      if (e.type !== 'render' || !e.element || !e.params) return;
+
+      var el = e.element;
+      var files = e.params.files || [];
+
+      if (el.subtitles && el.subtitles.length) return;
+      if (!files.some(function (f) { return SUB_EXT.indexOf(fileExt(f.path)) >= 0; })) return;
+
+      var hash = el.torrent_hash;
+      var url_of = function (f) {
+        return Lampa.Torserver.stream(f.path, hash, f.id).replace('&preload', '&play');
+      };
+
+      var subs = releaseSubs(el, files, (e.items || []).length === 1, url_of);
+
+      if (!subs.length) return;
+
+      var copy = (el.playlist || []).filter(function (p) { return p !== el && p.url === el.url; })[0];
+
+      el.subtitles = subs;
+      if (copy) copy.subtitles = subs;
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Субтитры из интернета — OpenSubtitles, когда выбраны «Оригинал + субтитры», а в раздаче
+  // русских нет. Нужен свой бесплатный ключ API (opensubtitles.com → профиль → API consumers);
+  // без входа — 5 загрузок в сутки с одного IP, со входом — по лимиту аккаунта. Плеер получает
+  // прямую ссылку на .srt (живёт 3 часа). Берём текущую серию и, если лимит позволяет, следующую
+  // ---------------------------------------------------------------------------
+
+  var OS_FILE = 'opensubtitles.txt';
+  var OS_TEMPLATE = 'api_key: \nusername: \npassword: \n';
+  var os_ready = null;
+
+  function osConf() {
+    return readJson('tvt_os');
+  }
+
+  function osSave(c) {
+    Lampa.Storage.set('tvt_os', c);
+    os_ready = null;
+  }
+
+  function osReady() {
+    if (os_ready === null) os_ready = !!(osConf().key && field('tvt_os_on', true));
+
+    return os_ready;
+  }
+
+  function osRequest(c, method, path, body, ok, fail) {
+    var headers = { 'Api-Key': c.key, 'Accept': 'application/json', 'User-Agent': 'LampaTorrentsTV v' + VERSION };
+    var url = (field('tvt_os_host', '') || 'https://' + (c.base || 'api.opensubtitles.com')) + '/api/v1' + path;
+
+    if (body) headers['Content-Type'] = 'application/json';
+    if (c.token) headers['Authorization'] = 'Bearer ' + c.token;
+
+    if (Lampa.Platform.is('android') && window.AndroidJS && typeof AndroidJS.httpReq === 'function') {
+      var net = new Lampa.Reguest();
+
+      net.timeout(10000);
+      net['native'](url, function (json) {
+        if (typeof json === 'string') {
+          try { json = JSON.parse(json); } catch (e) {}
+        }
+
+        ok(json);
+      }, function (err) {
+        fail(err && err.status || 0, err && (err.responseText || err.message) || '');
+      }, body ? JSON.stringify(body) : false, { headers: headers, dataType: 'json' });
+
+      return;
+    }
+
+    // В браузере User-Agent не задать — OpenSubtitles может отказать, на ТВ запрос идёт через приложение
+    var xhr = new XMLHttpRequest();
+
+    xhr.open(method, url, true);
+    xhr.timeout = 10000;
+
+    for (var h in headers) {
+      if (h !== 'User-Agent') xhr.setRequestHeader(h, headers[h]);
+    }
+
+    xhr.onload = function () {
+      var json = null;
+
+      try { json = JSON.parse(xhr.responseText); } catch (e) {}
+
+      if (xhr.status >= 200 && xhr.status < 300) ok(json);
+      else fail(xhr.status, json && (json.message || json.error) || xhr.responseText || '');
+    };
+    xhr.onerror = xhr.ontimeout = function () { fail(0, 'нет связи'); };
+    xhr.send(body ? JSON.stringify(body) : null);
+  }
+
+  // Вход нужен только для лимита больше 5 в сутки. Токен живёт сутки; неверный пароль не повторяем
+  // чаще раза в час — OpenSubtitles просит не долбить вход
+  function osLogin(c, done) {
+    if (!c.user || !c.pass) return done(c);
+    if (c.token && Date.now() - (c.token_t || 0) < 20 * 3600000) return done(c);
+    if (c.login_fail && Date.now() - c.login_fail < 3600000) return done(c);
+
+    c.token = '';
+    c.base = '';
+
+    osRequest(c, 'POST', '/login', { username: c.user, password: c.pass }, function (json) {
+      if (json && json.token) {
+        c.token = json.token;
+        c.token_t = Date.now();
+        c.base = json.base_url || '';
+        c.login_fail = 0;
+      }
+
+      osSave(c);
+      done(c);
+    }, function () {
+      c.login_fail = Date.now();
+      osSave(c);
+      done(c);
+    });
+  }
+
+  // Сезон и серия для поиска: OpenSubtitles нумерует, как TMDB, а у разрезанного сезона номер —
+  // как у раздач, поэтому сначала номер TMDB, потом номер раздачи
+  function osTargets(movie, el) {
+    var s = parseInt(el.season, 10) || 0;
+    var e = parseInt(el.episode, 10) || 0;
+    var out = [];
+    var split = season_splits[movie.id];
+
+    if (split) {
+      var part = split.list.filter(function (p) { return p.season_number === s; })[0];
+      var ep = part && part.episodes[e - 1];
+
+      if (part && ep && ep.tmdb_episode) out.push({ season: part.tmdb_season, episode: ep.tmdb_episode });
+    }
+
+    if (!out.length || out[0].season !== s || out[0].episode !== e) out.push({ season: s, episode: e });
+
+    return out;
+  }
+
+  function osSearch(c, q, ok, fail) {
+    var params = { ai_translated: 'exclude', languages: 'ru' };
+
+    if (q.season) {
+      params.parent_tmdb_id = q.tmdb;
+      params.season_number = q.season;
+      params.episode_number = q.episode;
+    } else params.tmdb_id = q.tmdb;
+
+    // Параметры по алфавиту — так советует OpenSubtitles (иначе лишний редирект)
+    var path = '/subtitles?' + Object.keys(params).sort().map(function (k) { return k + '=' + encodeURIComponent(params[k]); }).join('&');
+
+    osRequest(c, 'GET', path, null, function (json) { ok(json && json.data || []); }, fail);
+  }
+
+  // Лучший вариант: похож на имя файла (та же релиз-группа), от доверенных, без пометок для слабослышащих, популярный
+  function osBest(list, filename) {
+    var words = (filename || '').toLowerCase().split(/[^a-z0-9а-яё]+/).filter(function (w) {
+      return w.length >= 3 && !/^(mkv|mp4|avi|1080p|720p|2160p|x264|x265|hevc|avc|aac|flac|webrip|bdrip|web|rip)$/.test(w) && !/^\d+$/.test(w);
+    });
+    var best = null;
+    var best_score = -Infinity;
+
+    list.forEach(function (it) {
+      var a = it.attributes || {};
+      var f = (a.files || [])[0];
+
+      if (!f || a.language !== 'ru' || a.foreign_parts_only) return;
+
+      var rel = (a.release || '').toLowerCase();
+      var score = words.filter(function (w) { return rel.indexOf(w) >= 0; }).length * 5 + (a.from_trusted ? 3 : 0) - (a.hearing_impaired ? 2 : 0) + Math.log(1 + (a.download_count || 0));
+
+      if (score > best_score) {
+        best_score = score;
+        best = { file_id: f.file_id, release: a.release || f.file_name || '' };
+      }
+    });
+
+    return best;
+  }
+
+  function osDownload(c, file_id, ok, fail) {
+    osRequest(c, 'POST', '/download', { file_id: file_id }, function (json) {
+      if (json && json.link) ok(json);
+      else fail(0, json && json.message || 'нет ссылки');
+    }, fail);
+  }
+
+  // Перед запуском серии (autoPick): ищем субтитры для неё и следующей, кладём в серию и в её копию в плейлисте
+  function onlineSubs(ap, el, go) {
+    var c = osConf();
+
+    if (!osReady() || !ap.target.want_subs || (el.subtitles && el.subtitles.length)) return go();
+
+    var finished = false;
+    var finish = function (text) {
+      if (finished) return;
+
+      finished = true;
+      clearTimeout(timer);
+      Lampa.Loading.stop();
+
+      if (text) Lampa.Noty.show(text);
+
+      go();
+    };
+    var timer = setTimeout(function () { finish('OpenSubtitles не ответил — запускаю без субтитров'); }, 10000);
+
+    var playlist = el.playlist || [];
+    var at = -1;
+
+    playlist.forEach(function (p, i) { if (at < 0 && p.url === el.url) at = i; });
+
+    var items = [el];
+
+    if (!ap.target.movie && playlist[at + 1]) items.push(playlist[at + 1]);
+
+    var put = function (it, subs) {
+      it.subtitles = subs;
+      playlist.forEach(function (p) { if (p.url === it.url) p.subtitles = subs; });
+    };
+
+    Lampa.Loading.start(function () { finish(''); }, 'Субтитры OpenSubtitles…');
+
+    osLogin(c, function (c) {
+      var got = 0;
+      var remaining = null;
+
+      var report = function () {
+        if (!got) return 'OpenSubtitles: русских субтитров к этой серии нет';
+
+        return 'Субтитры OpenSubtitles: ' + (got > 1 ? 'эта и следующая серия' : 'эта серия') + (remaining !== null ? ' · загрузок на сегодня осталось ' + remaining : '');
+      };
+
+      var each = function (i) {
+        var it = items[i];
+
+        // Следующую серию берём, только если лимит позволяет: на сегодня должно остаться хотя бы 3
+        if (!it || (i > 0 && remaining !== null && remaining < 3)) return finish(report());
+
+        var targets = ap.target.movie ? [{ season: 0, episode: 0 }] : osTargets(ap.movie, it);
+
+        var attempt = function (j) {
+          var t = targets[j];
+
+          if (!t) return each(i + 1);
+
+          osSearch(c, { tmdb: ap.movie.id, season: t.season, episode: t.episode }, function (list) {
+            var b = osBest(list, (it.path || it.title || '').split('/').pop());
+
+            if (!b) return attempt(j + 1);
+
+            osDownload(c, b.file_id, function (json) {
+              if (typeof json.remaining === 'number') remaining = json.remaining;
+
+              put(it, [{ label: 'OpenSubtitles · ' + (b.release || 'рус').slice(0, 40), url: json.link }]);
+              got++;
+              each(i + 1);
+            }, function (status, msg) {
+              if (status === 406 || /quota|limit|allowed/i.test(msg || '')) return finish(got ? report() : 'OpenSubtitles: лимит загрузок на сегодня исчерпан');
+
+              finish(got ? report() : 'OpenSubtitles: ' + (msg || status));
+            });
+          }, function (status, msg) {
+            finish(status === 401 || status === 403 ? 'OpenSubtitles: ключ API не подошёл' : got ? report() : 'OpenSubtitles: ' + (msg || status || 'нет связи'));
+          });
+        };
+
+        attempt(0);
+      };
+
+      each(0);
+    });
+  }
+
+  // Ключ и вход — из файла в репозитории синхронизации (вставляются на телефоне на сайте GitHub)
+  function osParse(text) {
+    var get = function (name) {
+      var m = new RegExp(name + '\\s*[:=][ \\t]*([^\\r\\n]*)', 'i').exec(text || '');
+
+      return m ? m[1].trim() : '';
+    };
+
+    return { key: get('api[_\\s-]*key'), user: get('username'), pass: get('password') };
+  }
+
+  function osFromPhone() {
+    if (!syncConfig()) return Lampa.Noty.show('Сначала настройте синхронизацию через GitHub (ниже)');
+
+    var qr = window.tva_api && tva_api.qrWindow;
+
+    storeGet(OS_FILE, function (text, sha) {
+      storeInfo(function (info) {
+        var path = info.dir + OS_FILE;
+        var url = sha ? info.web + '/edit/' + info.branch + '/' + path.split('/').map(encodeURIComponent).join('/') :
+          info.web + '/new/' + info.branch + '?filename=' + encodeURIComponent(path) + '&value=' + encodeURIComponent(OS_TEMPLATE);
+        var hint = 'Откройте ссылку на телефоне. Откроется ваш приватный репозиторий на GitHub: вставьте ключ API после «api_key:» (логин и пароль OpenSubtitles — по желанию, для лимита больше 5 загрузок в сутки) и нажмите «Commit changes». Телевизор заберёт их сам.';
+        var watch = function (close) {
+          storeGet(OS_FILE, function (fresh) {
+            var parsed = osParse(typeof fresh === 'string' ? fresh : '');
+
+            if (!parsed.key || (sha && fresh === text)) return;
+
+            var c = osConf();
+
+            c.key = parsed.key;
+            c.user = parsed.user;
+            c.pass = parsed.pass;
+            c.token = '';
+            c.login_fail = 0;
+            osSave(c);
+            close();
+            osUpdateDescr();
+            Lampa.Noty.show('OpenSubtitles: ключ получен' + (parsed.user ? ', вход — ' + parsed.user : ''));
+          }, function () {});
+        };
+
+        if (qr) return qr('OpenSubtitles с телефона', hint, url, [], watch);
+
+        // Без плагина «Аниме» QR-кода нет — показываем ссылку текстом и так же ждём файл
+        var html = $('<div style="line-height:1.4"></div>');
+        var open = true;
+        var enabled = Lampa.Controller.enabled().name;
+        var tick = function () {
+          if (!open) return;
+
+          watch(function () {
+            open = false;
+            Lampa.Modal.close();
+            Lampa.Controller.toggle(enabled);
+          });
+          setTimeout(tick, 5000);
+        };
+
+        html.append($('<div></div>').text(hint)).append($('<div style="margin-top:1em;word-break:break-all;opacity:.7"></div>').text(url));
+        Lampa.Modal.open({
+          title: 'OpenSubtitles с телефона',
+          html: html,
+          size: 'medium',
+          onBack: function () {
+            open = false;
+            Lampa.Modal.close();
+            Lampa.Controller.toggle(enabled);
+          }
+        });
+        setTimeout(tick, 5000);
+      }, function (status, msg) { Lampa.Noty.show('GitHub: ' + (msg || status)); });
+    }, function (status, msg) { Lampa.Noty.show('GitHub: ' + (msg || status)); });
+  }
+
+  function osDescr() {
+    var c = osConf();
+
+    if (!c.key) return 'Ключ не задан';
+
+    return 'Ключ •••• ' + c.key.slice(-4) + (c.user ? ' · вход: ' + c.user : ' · без входа: 5 загрузок в сутки');
+  }
+
+  function osUpdateDescr() {
+    $('[data-name="tvt_os_phone"] .settings-param__descr').text(osDescr());
+  }
+
   function nextEpisode(movie, s, e) {
     var list = realSeasons(movie);
 
@@ -2057,7 +2508,7 @@
     if (found) {
       ap.picked = true;
       if (!t.movie) rememberSession(ap.movie, t, found.element.torrent_hash, ap.files);
-      found.item.trigger('hover:enter');
+      onlineSubs(ap, found.element, function () { found.item.trigger('hover:enter'); });
     } else {
       finishAutoplay();
       Lampa.Noty.show(t.movie ? 'Не удалось выбрать файл — выберите вручную' : 'Серия ' + t.episode + ' не найдена в раздаче — выберите файл вручную');
@@ -2524,7 +2975,12 @@
       }
 
       pick.list = by_voice.filter(function (it) { return it.r.res === pick.quality; });
-      pick.list.forEach(function (it) { it.score = scoreRelease(it, serial); });
+      pick.list.forEach(function (it) {
+        it.score = scoreRelease(it, serial);
+
+        // «Оригинал + субтитры»: раздачи со своими русскими субтитрами — раньше тех, к которым их придётся искать в интернете
+        if (pick.voice === 't:sub' && it.r.rus_subs) it.score += 1000;
+      });
       pick.list.sort(function (a, b) { return b.score - a.score; });
 
       var saved = prefs.release ? pick.list.filter(function (it) { return releaseKey(it) === prefs.release; })[0] : null;
@@ -3046,6 +3502,9 @@
         resume = { season: target.season, episode: target.episode };
         saveTitlePrefs(movie, { last: { season: target.season, episode: target.episode, t: Date.now() } });
       }
+
+      // Выбраны «Оригинал + субтитры», а в раздаче русских субтитров нет — их поищет OpenSubtitles
+      target.want_subs = pick.voice === 't:sub' && !it.r.rus_subs;
 
       startAutoplay(it.el, movie, target, function () {
         _this.refresh();
@@ -4433,6 +4892,53 @@
       field: { name: 'Искать и через TorrServer (rutor)', description: 'Нужен включённый поиск rutor в настройках TorrServer. Он держит базу rutor в памяти (+300–400 МБ), на ТВ с 2 ГБ не включайте' }
     });
 
+    // --- субтитры ---
+
+    Lampa.SettingsApi.addParam({
+      component: 'tv_torrents',
+      param: { name: 'tvt_os_title', type: 'title' },
+      field: { name: 'Субтитры' }
+    });
+
+    Lampa.SettingsApi.addParam({
+      component: 'tv_torrents',
+      param: { name: 'tvt_os_on', type: 'trigger', default: true },
+      field: { name: 'Искать на OpenSubtitles', description: 'Выбрано «Оригинал + субтитры», а в раздаче русских субтитров нет — перед запуском серии ищем их на OpenSubtitles (эту серию и следующую). Субтитры из самой раздачи подставляются всегда' },
+      onChange: function () { os_ready = null; }
+    });
+
+    Lampa.SettingsApi.addParam({
+      component: 'tv_torrents',
+      param: { name: 'tvt_os_phone', type: 'button' },
+      field: { name: 'OpenSubtitles: ключ с телефона', description: osDescr() },
+      onChange: osFromPhone
+    });
+
+    // Запасной путь — системная клавиатура: в неё можно вставить ключ с телефона через приложение Google TV
+    Lampa.SettingsApi.addParam({
+      component: 'tv_torrents',
+      param: { name: 'tvt_os_key_edit', type: 'button' },
+      field: { name: 'OpenSubtitles: ввести ключ', description: 'Ключ API: opensubtitles.com → профиль → API consumers → New consumer' },
+      onChange: function () {
+        var enabled = Lampa.Controller.enabled().name;
+
+        Lampa.Input.edit({ title: 'Ключ API OpenSubtitles', value: '', free: true, nosave: true, nomic: true, keyboard: 'system' }, function (value) {
+          value = (value || '').replace(/\s+/g, '');
+
+          if (value) {
+            var c = osConf();
+
+            c.key = value;
+            osSave(c);
+            osUpdateDescr();
+            Lampa.Noty.show('OpenSubtitles: ключ сохранён (…' + value.slice(-4) + ')');
+          }
+
+          Lampa.Controller.toggle(enabled);
+        });
+      }
+    });
+
     Lampa.SettingsApi.addParam({
       component: 'tv_torrents',
       param: { name: 'tvt_reset_studios', type: 'button' },
@@ -4561,6 +5067,7 @@
     initEpisodeGrid();
     initAutoplay();
     initSplit();
+    initSubs();
     initNarrow();
     initSync();
     initForget();
@@ -4585,6 +5092,7 @@
     // Для anime.js: свои файлы в репозитории синхронизации и открытие сериала на нужном сезоне
     store: { ready: function () { return !!syncConfig(); }, get: storeGet, put: storePut, info: storeInfo },
     openSeason: function (id, season) { window.tvt_season_hint = { id: id, season: season, t: Date.now() }; },
+    subs: { release: releaseSubs, episodeNo: fileEpisodeNo, online: onlineSubs, targets: osTargets, parse: osParse },
     version: VERSION
   };
 
