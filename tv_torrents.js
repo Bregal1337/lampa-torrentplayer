@@ -7,7 +7,7 @@
   if (window.tvt_plugin_ready) return;
   window.tvt_plugin_ready = true;
 
-  var VERSION = '1.13.0';
+  var VERSION = '1.13.1';
 
   // ---------------------------------------------------------------------------
   // Разбор названия раздачи
@@ -5405,27 +5405,21 @@
     }
   }
 
-  // Одно зеркало: TMDB через него (если в Lampa включено проксирование TMDB) и «живо ли» для Lampa
+  // Одно зеркало, по отдельности: TMDB через него (если в Lampa включено проксирование TMDB) и «живо ли»
+  // для самой Lampa. В сети человека они бывают живы порознь: основной адрес cub.black отвечает, а
+  // apitmdb.cub.black не открывается — поэтому для TMDB важен только TMDB
   function mirrorTest(m, done) {
     var urls = mirrorUrls(m);
-    var tmdb = Lampa.Storage.field('proxy_tmdb') || !!field('tvt_mirror_base', '');
+    var tmdb = mirrorTmdbUsed();
     var random = String(Math.random());
-    var res = { mirror: m, ok: false, ms: 0, why: '' };
+    var res = { mirror: m, tmdb: null, check: null };
     var left = tmdb ? 2 : 1;
-    var parts = {};
 
     var part = function (name) {
       return function (ok, ms, why) {
-        parts[name] = { ok: ok, ms: ms, why: why };
+        res[name] = { ok: ok, ms: ms, why: why };
 
-        if (--left) return;
-
-        var bad = Object.keys(parts).filter(function (k) { return !parts[k].ok; })[0];
-
-        res.ok = !bad;
-        res.ms = parts.tmdb ? parts.tmdb.ms : parts.check.ms;
-        res.why = bad ? (bad === 'tmdb' ? 'TMDB: ' : 'проверка Lampa: ') + parts[bad].why : '';
-        done(res);
+        if (!--left) done(res);
       };
     };
 
@@ -5434,8 +5428,18 @@
     mirrorRequest('POST', urls.check, 'data=' + encodeURIComponent(random), function (text) { return text === random; }, part('check'));
   }
 
+  function mirrorTmdbUsed() {
+    return !!(Lampa.Storage.field('proxy_tmdb') || field('tvt_mirror_base', ''));
+  }
+
   function mirrorText(r) {
-    return r.mirror + ' — ' + (r.ok ? r.ms + ' мс' : r.why);
+    var one = function (p) { return p ? (p.ok ? p.ms + ' мс' : p.why) : ''; };
+
+    return r.mirror + ': ' + (r.tmdb ? 'TMDB ' + one(r.tmdb) + ', ' : '') + 'проверка Lampa ' + one(r.check);
+  }
+
+  function fastest(results, key) {
+    return results.filter(function (x) { return x[key] && x[key].ok; }).sort(function (a, b) { return a[key].ms - b[key].ms; })[0] || null;
   }
 
   function checkMirrors(manual, done) {
@@ -5458,41 +5462,43 @@
 
         mirror_checking = false;
 
-        var ok = results.filter(function (x) { return x.ok; }).sort(function (a, b) { return a.ms - b.ms; });
+        var tmdb_used = mirrorTmdbUsed();
         var cur = Lampa.Manifest.cub_domain;
-        var cur_res = results.filter(function (x) { return x.mirror === cur; })[0];
-        var best = ok[0];
-        var chosen = cur;
+        var pick = function (key, current) {
+          var best = fastest(results, key);
+          var mine = results.filter(function (x) { return x.mirror === current; })[0];
 
-        // Меняем, только если текущее не работает или заметно медленнее — без лишних переключений
-        if (best && (!cur_res || !cur_res.ok || cur_res.ms - best.ms > 1000)) chosen = best.mirror;
-        if (!best) chosen = '';
+          if (!best) return '';
+          // Меняем, только если текущее не работает или заметно медленнее — без лишних переключений
+          if (mine && mine[key] && mine[key].ok && mine[key].ms - best[key].ms <= 1000) return current;
 
+          return best.mirror;
+        };
+
+        // Для запросов TMDB — самое быстрое по TMDB; основной домен Lampa меняем, только если и её
+        // собственная проверка на нём проходит (иначе Lampa через 15 минут переключится обратно)
+        var tmdb_best = tmdb_used ? pick('tmdb', mirror_best || cur) : '';
+        var domain_best = pick('check', cur);
         var order = list.map(function (m) { return results.filter(function (x) { return x.mirror === m; })[0]; });
         var summary = order.map(mirrorText).join('; ');
 
-        console.log('TV Torrents', 'зеркала Lampa: ' + summary + (chosen ? ' → основное ' + chosen : ' → рабочих нет, оставляю как есть'));
+        mirror_best = tmdb_best;
 
-        if (chosen) applyMirror(chosen);
+        if (domain_best && domain_best !== cur) {
+          Lampa.Storage.set('cub_domain', domain_best, true);
+          Lampa.Storage.set('cub_alive', 'https://' + domain_best, true);
+        }
 
-        Lampa.Storage.set('tvt_mirror', { t: Date.now(), best: chosen, summary: summary });
+        console.log('TV Torrents', 'зеркала Lampa: ' + summary + ' → TMDB через ' + (tmdb_best || (tmdb_used ? 'ни одно не ответило' : 'TMDB напрямую')) + ', основной домен ' + (domain_best || cur));
+
+        Lampa.Storage.set('tvt_mirror', { t: Date.now(), tmdb: tmdb_best, domain: domain_best || cur, found: !tmdb_used || !!tmdb_best, summary: summary });
         updateMirrorDescr();
 
-        if (manual) Lampa.Noty.show(chosen ? 'Зеркало Lampa: ' + chosen + (chosen !== cur ? ' (было ' + cur + ')' : '') : 'Ни одно зеркало Lampa не ответило');
+        if (manual) Lampa.Noty.show(tmdb_used ? (tmdb_best ? 'TMDB через ' + tmdb_best : 'Ни одно зеркало не ответило для TMDB') : 'TMDB напрямую, зеркало не нужно');
 
-        done(chosen);
+        done(tmdb_best);
       });
     });
-  }
-
-  // Так же, как Lampa сама переключает зеркало, плюс TMDB — через выбранное сразу, без перезапуска
-  function applyMirror(m) {
-    if (Lampa.Manifest.cub_domain !== m) {
-      Lampa.Storage.set('cub_domain', m, true);
-      Lampa.Storage.set('cub_alive', 'https://' + m, true);
-    }
-
-    mirror_best = m;
   }
 
   function mirrorStatusText() {
@@ -5501,8 +5507,9 @@
     if (!s.t) return 'Ещё не проверялись';
 
     var d = new Date(s.t);
+    var when = ('0' + d.getDate()).slice(-2) + '.' + ('0' + (d.getMonth() + 1)).slice(-2) + ' ' + ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
 
-    return (s.best ? 'Основное: ' + s.best : 'Рабочих не нашлось') + ' · проверено ' + ('0' + d.getDate()).slice(-2) + '.' + ('0' + (d.getMonth() + 1)).slice(-2) + ' ' + ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+    return (s.tmdb ? 'TMDB через ' + s.tmdb : s.found ? 'TMDB напрямую' : 'Для TMDB ни одно не ответило') + ' · проверено ' + when + (s.summary ? ' · ' + s.summary : '');
   }
 
   function updateMirrorDescr() {
@@ -5524,13 +5531,13 @@
 
     var saved = readJson('tvt_mirror');
 
-    // Выбранное раньше всё ещё основное — пользуемся им сразу; Lampa сама сменила домен или сутки
-    // прошли — проверяем снова (после смены Lampa — не чаще раза в час)
-    if (saved.best && saved.best === Lampa.Manifest.cub_domain) mirror_best = saved.best;
+    // Выбранное в прошлый раз — с первого же запроса после запуска. Проверяем снова раз в сутки,
+    // а если в прошлый раз для TMDB не нашлось ни одного — через час
+    if (field('tvt_mirror_auto', true) && saved.tmdb) mirror_best = saved.tmdb;
 
-    var due = !saved.t || Date.now() - saved.t > MIRROR_DAY || (saved.best && saved.best !== Lampa.Manifest.cub_domain && Date.now() - saved.t > 3600000);
+    var due = !saved.t || Date.now() - saved.t > MIRROR_DAY || (!saved.found && Date.now() - saved.t > 3600000);
 
-    if (field('tvt_mirror_auto', true) && due) setTimeout(function () { checkMirrors(false); }, 5000);
+    if (field('tvt_mirror_auto', true) && due) setTimeout(function () { checkMirrors(false); }, 3000);
   }
 
   // Для проверки разбора сезонов на сохранённых данных: результаты парсера + серии TMDB → сезоны
