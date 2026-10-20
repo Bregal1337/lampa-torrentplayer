@@ -7,7 +7,7 @@
   if (window.tvt_plugin_ready) return;
   window.tvt_plugin_ready = true;
 
-  var VERSION = '1.13.2';
+  var VERSION = '1.12.0';
 
   // ---------------------------------------------------------------------------
   // Разбор названия раздачи
@@ -5328,28 +5328,11 @@
     initAutoplay();
     initSplit();
     initSubs();
-    undoMirrors();
     initNarrow();
     initSync();
     initForget();
 
     console.log('TV Torrents', 'started', VERSION);
-  }
-
-  // 1.13.0–1.13.1 сами выбирали зеркало Lampa для TMDB и могли сменить её основной домен — из-за этого
-  // у части карточек не грузились реакции и постеры. Выбор зеркала убран; если плагин его успел
-  // сделать, возвращаем выбор самой Lampa (она заново найдёт живое зеркало при запуске)
-  function undoMirrors() {
-    try {
-      if (!localStorage.getItem('tvt_mirror')) return;
-
-      localStorage.removeItem('tvt_mirror');
-      localStorage.removeItem('tvt_mirror_auto');
-      localStorage.removeItem('cub_domain');
-      localStorage.removeItem('cub_alive');
-
-      console.log('TV Torrents', 'выбор зеркала отключён, основной домен снова выбирает Lampa');
-    } catch (e) {}
   }
 
   // Для проверки разбора сезонов на сохранённых данных: результаты парсера + серии TMDB → сезоны
