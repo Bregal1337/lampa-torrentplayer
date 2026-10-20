@@ -7,7 +7,7 @@
   if (window.tvt_plugin_ready) return;
   window.tvt_plugin_ready = true;
 
-  var VERSION = '1.6.2';
+  var VERSION = '1.7.0';
 
   // ---------------------------------------------------------------------------
   // Разбор названия раздачи
@@ -2281,7 +2281,11 @@
       var year = ((movie.first_air_date || movie.release_date || '') + '').slice(0, 4);
       var meta = [year, (movie.genres || []).slice(0, 3).map(function (g) { return g.name; }).join(', ')];
 
-      if (movie.vote_average) meta.push('★ ' + (+movie.vote_average).toFixed(1));
+      // Оценка Shikimori от плагина «Аниме» (anime.js) — для аниме она точнее TMDB
+      var shiki = window.tvt_rating ? window.tvt_rating(movie) : 0;
+
+      if (shiki) meta.push('Shikimori ★ ' + (+shiki).toFixed(1));
+      else if (movie.vote_average) meta.push('★ ' + (+movie.vote_average).toFixed(1));
 
       if (serial) {
         var rs = realSeasons(movie);
@@ -3026,7 +3030,24 @@
       updateSeasonStates();
       updateEpisodeStates();
       updateDetails();
+      sendProgress();
     };
+
+    // Сколько серий каждого сезона досмотрено (в нумерации раздач) — для других плагинов,
+    // например anime.js переносит это в список Shikimori
+    function sendProgress() {
+      if (!serial) return;
+
+      var list = realSeasons(movie).map(function (s) {
+        var upto = 0;
+
+        for (var e = 1; e <= s.episode_count; e++) if (isWatched(episodeView(movie, s.season_number, e))) upto = e;
+
+        return { season: s.season_number, episodes: s.episode_count, watched: upto, air_date: s.air_date || '' };
+      });
+
+      Lampa.Listener.send('tvt_progress', { movie: movie, seasons: list });
+    }
 
     function onTimeline() {
       clearTimeout(refresh_timer);
@@ -3192,6 +3213,15 @@
         var seasons = realSeasons(movie);
         var first = seasons.filter(function (s) { return releasesFor(s.season_number).length && !isFuture(s.air_date); })[0] || seasons[0];
         var start_season = resume ? resume.season : first ? first.season_number : 1;
+        var hint = window.tvt_season_hint;
+
+        // Открыли из подборки аниме конкретный сезон («Магическая битва 2») — начинаем с него
+        if (hint && hint.id === movie.id && Date.now() - hint.t < 10 * 60000 && seasons.some(function (s) { return s.season_number === hint.season; })) {
+          if (!resume || resume.season !== hint.season) resume = null;
+          start_season = hint.season;
+        }
+
+        window.tvt_season_hint = null;
 
         cur.season = start_season;
         renderSeasons();
@@ -3200,6 +3230,7 @@
           ready = true;
           _this.activity.loader(false);
           _this.activity.toggle();
+          sendProgress();
         });
       } else {
         computePick();
@@ -3762,6 +3793,53 @@
 
         next();
       }
+    }, fail);
+  }
+
+  // Файлы других плагинов в папке человека: <имя>/_extra/<файл>. Синхронизация читает только файлы
+  // в самой папке, поэтому вложенная папка ей не мешает. ok(объект или null, если файла нет)
+  function storePath(cfg, repo, file) {
+    return '/repos/' + repo + '/contents/' + encodeURIComponent(cfg.name) + '/_extra/' + encodeURIComponent(file);
+  }
+
+  function storeGet(file, ok, fail) {
+    var cfg = syncConfig();
+
+    if (!cfg) return fail(0, 'синхронизация через GitHub не настроена');
+
+    syncRepo(cfg, function (repo) {
+      gh(cfg, 'GET', storePath(cfg, repo, file), null, function (json) {
+        try {
+          ok(JSON.parse(b64decode(json.content)), json.sha);
+        } catch (e) {
+          fail(0, 'файл испорчен');
+        }
+      }, function (status, message) {
+        if (status === 404) ok(null, null);
+        else fail(status, message);
+      });
+    }, fail);
+  }
+
+  function storePut(file, obj, ok, fail) {
+    var cfg = syncConfig();
+
+    if (!cfg) return fail(0, 'синхронизация через GitHub не настроена');
+
+    syncRepo(cfg, function (repo) {
+      var path = storePath(cfg, repo, file);
+      var put = function (sha) {
+        var body = { message: cfg.name + ' / ' + file, content: b64encode(JSON.stringify(obj)) };
+
+        if (sha) body.sha = sha;
+
+        gh(cfg, 'PUT', path, body, function () { ok(); }, fail);
+      };
+
+      gh(cfg, 'GET', path, null, function (json) { put(json.sha); }, function (status, message) {
+        if (status === 404) put(null);
+        else fail(status, message);
+      });
     }, fail);
   }
 
@@ -4363,7 +4441,16 @@
     return { plan: plan, seasons: (list || tmdbSeasons(movie)).map(function (s) { return s.season_number + ':' + s.episode_count; }), list: list };
   }
 
-  window.tvt_api = { parseRelease: parseRelease, buildSearchParams: buildSearchParams, testSeasons: testSeasons, sync: function () { runSync(true); }, version: VERSION };
+  window.tvt_api = {
+    parseRelease: parseRelease,
+    buildSearchParams: buildSearchParams,
+    testSeasons: testSeasons,
+    sync: function () { runSync(true); },
+    // Для anime.js: свои файлы в репозитории синхронизации и открытие сериала на нужном сезоне
+    store: { ready: function () { return !!syncConfig(); }, get: storeGet, put: storePut },
+    openSeason: function (id, season) { window.tvt_season_hint = { id: id, season: season, t: Date.now() }; },
+    version: VERSION
+  };
 
   if (window.appready) start();
   else {
