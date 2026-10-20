@@ -7,7 +7,7 @@
   if (window.tvt_plugin_ready) return;
   window.tvt_plugin_ready = true;
 
-  var VERSION = '1.10.0';
+  var VERSION = '1.10.1';
 
   // ---------------------------------------------------------------------------
   // Разбор названия раздачи
@@ -910,6 +910,9 @@
 
     html.append(head).append(rows).append(list);
     scroll.append(html);
+    // Высота списка — экран без шапки Lampa. Без этого прокрутка растягивается на весь список
+    // и не двигается за фокусом
+    scroll.minus();
 
     this.create = function () {
       return this.render();
@@ -1433,6 +1436,8 @@
       if (object.movie && Lampa.Background && Lampa.Utils.cardImgBackgroundBlur) {
         Lampa.Background.immediately(Lampa.Utils.cardImgBackgroundBlur(object.movie));
       }
+
+      if (Lampa.Layer && Lampa.Layer.update) Lampa.Layer.update(scroll.render(true));
 
       Lampa.Controller.add('content', {
         toggle: function () {
@@ -2882,12 +2887,27 @@
       if (!list.length) list = all.slice();
       if (!serial) return list;
 
+      // Сериал: раздачи с годами вне лет выхода — другое произведение с тем же названием
+      // (фильм «Тетрадь смерти» 2017 года у сериала 2006–2007)
+      var y0 = parseInt((movie.first_air_date || '').slice(0, 4), 10);
+      var y1 = parseInt((movie.last_air_date || '').slice(0, 4), 10) || new Date().getFullYear();
+
+      if (y0) {
+        var in_years = list.filter(function (it) {
+          return !it.r.years.length || it.r.years.some(function (y) { return y[1] >= y0 - 1 && y[0] <= y1 + 1; });
+        });
+
+        if (in_years.length) list = in_years;
+      }
+
       var exact = list.filter(function (it) { return coversSeason(it, n); });
+      var unnamed = list.filter(function (it) { return !it.r.seasons.length; });
 
-      if (exact.length) return exact;
+      // Сезон в названии не указан: у односезонного сериала это тот же сезон — берём вместе с «[S01]»
+      // («Тетрадь смерти»: одна раздача с S01 и полсотни «1-37 из 37»), у многосезонного — запасной вариант
+      if (realSeasons(movie).length <= 1) return exact.concat(unnamed);
 
-      // Сезон в названии не указан: для односезонных сериалов это наш сезон, иначе — запасной вариант
-      return list.filter(function (it) { return !it.r.seasons.length; });
+      return exact.length ? exact : unnamed;
     }
 
     function matchVoice(key) {
