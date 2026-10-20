@@ -7,7 +7,7 @@
   if (window.tvt_plugin_ready) return;
   window.tvt_plugin_ready = true;
 
-  var VERSION = '1.7.1';
+  var VERSION = '1.8.0';
 
   // ---------------------------------------------------------------------------
   // Разбор названия раздачи
@@ -3099,9 +3099,12 @@
         prepareSeasons(function () {
           // Сначала досмотренное в плеере по данным TorrServer — чтобы «Продолжить» сразу указывало верно
           recoverSession(cardKey(movie), function (marked) {
-            _this.afterLoad();
+            pullWatched(function (text) {
+              _this.afterLoad();
 
-            if (marked.length) Lampa.Noty.show(markedText(marked));
+              if (marked.length) Lampa.Noty.show(markedText(marked));
+              else if (text) Lampa.Noty.show(text);
+            });
           });
         });
       }, function () {
@@ -3110,6 +3113,76 @@
         Lampa.Noty.show('Парсер не ответил — раздачи не загружены');
       });
     };
+
+    // Досмотренное в другом сервисе (anime.js — список Shikimori): отмечаем серии до сборки экрана.
+    // Ответ не пришёл за 5 секунд — экран собирается без него, отметки появятся, когда придёт
+    function pullWatched(done) {
+      if (typeof window.tvt_external_watched !== 'function') return done('');
+
+      var finished = false;
+      var timer = setTimeout(function () {
+        finished = true;
+        done('');
+      }, 5000);
+
+      var seasons = realSeasons(movie).map(function (s) {
+        var upto = 0;
+
+        for (var e = 1; e <= s.episode_count; e++) if (isWatched(episodeView(movie, s.season_number, e))) upto = e;
+
+        return { season: s.season_number, episodes: s.episode_count, watched: upto, air_date: s.air_date || '' };
+      });
+
+      var apply = function (list) {
+        var parts = [];
+
+        (list || []).forEach(function (x) {
+          var s = seasons.filter(function (y) { return y.season === x.season; })[0];
+          var n = Math.min(x.watched, s ? s.episodes : 0);
+          var count = 0;
+
+          for (var e = 1; e <= n; e++) {
+            var v = episodeView(movie, x.season, e);
+
+            if (!isWatched(v)) {
+              v.handler(100, v.duration || 0, v.duration || 0);
+              count++;
+            }
+          }
+
+          if (count) parts.push(x.season + ' сезон: 1–' + n);
+        });
+
+        return parts.length ? 'Shikimori: отмечены просмотренными ' + parts.join(', ') : '';
+      };
+
+      try {
+        window.tvt_external_watched(movie, seasons, function (list) {
+          var text = apply(list);
+
+          if (finished) {
+            if (text && ready) {
+              Lampa.Noty.show(text);
+              _this.refresh();
+            }
+
+            return;
+          }
+
+          finished = true;
+          clearTimeout(timer);
+          done(text);
+        });
+      } catch (e) {
+        console.log('TV Torrents', 'external watched', e);
+
+        if (!finished) {
+          finished = true;
+          clearTimeout(timer);
+          done('');
+        }
+      }
+    }
 
     // Сезоны TMDB не совпадают с сезонами раздач — грузим серии TMDB и раскладываем их по сезонам раздач
     function prepareSeasons(done) {

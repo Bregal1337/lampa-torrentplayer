@@ -8,7 +8,7 @@
   // Карточки открываются обычной карточкой TMDB, поэтому кнопка «Торренты» работает как всегда.
   // ---------------------------------------------------------------------------
 
-  var VERSION = '1.2.0';
+  var VERSION = '1.3.0';
   var HOSTS = ['https://shikimori.io', 'https://shikimori.rip'];
   var REDIRECT = 'urn:ietf:wg:oauth:2.0:oob';
   var PAGE = 20;
@@ -1164,6 +1164,7 @@
         a.nickname = me.nickname;
         saveAuth(a, true);
         cache = {};
+        ratesRefresh(true);
         Lampa.Noty.show('Shikimori: вход выполнен — ' + me.nickname);
       }, function (status) { Lampa.Noty.show('Shikimori: ошибка ' + status); });
     }, function (status, msg) {
@@ -1173,7 +1174,11 @@
 
   function logout() {
     Lampa.Storage.set('tva_auth', {});
+    Lampa.Storage.set('tva_rates', {});
     cache = {};
+    rates = null;
+    tmdb_index = {};
+    decorateAll();
     updateStatus();
     Lampa.Noty.show('Shikimori: выход выполнен на этом устройстве');
   }
@@ -1189,6 +1194,7 @@
       if (remote && remote.refresh_token && remote.user_id && (!loggedIn() || (remote.t || 0) > (auth().t || 0))) {
         saveAuth(remote, false);
         cache = {};
+        ratesRefresh(true);
         if (manual) Lampa.Noty.show('Shikimori: вход взят из репозитория — ' + (remote.nickname || ''));
       } else if (manual) Lampa.Noty.show(remote ? 'Shikimori: в репозитории тот же вход' : 'Shikimori: в репозитории входа нет');
     }, function (status, msg) {
@@ -1248,6 +1254,7 @@
 
           var done = function () {
             cache = {};
+            rateLocal(target.id, a.remove ? null : a.status, a.status === 'completed' && target.episodes ? target.episodes : rate && rate.episodes, target.episodes);
             Lampa.Noty.show('Shikimori: ' + (a.remove ? 'убрано из списка' : STATUS_NAMES[a.status]) + ' — ' + title);
           };
           var fail = function (status, msg) { Lampa.Noty.show('Shikimori: не сохранилось (' + (msg || status) + ')'); };
@@ -1423,6 +1430,7 @@
           else if (!rate || ['planned', 'on_hold', 'dropped'].indexOf(rate.status) >= 0) patch.status = 'watching';
 
           rateSave(part.id, rate, patch, function () {
+            rateLocal(part.id, patch.status || rate.status, n, total);
             console.log('Anime', 'Shikimori: ' + (part.russian || part.name || part.id) + ' — ' + n + ' сер.');
             each(i + 1);
           }, function (status, msg) {
@@ -1440,6 +1448,488 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Список Shikimori на устройстве: весь список одним запросом (600 тайтлов ≈ 170 КБ),
+  // на устройстве — коротко { id: [статус, серий] }. Обновляется при запуске и при входе в раздел
+  // не чаще раза в 15 минут, свои изменения записываются сразу. По нему — отметки на постерах.
+  // ---------------------------------------------------------------------------
+
+  var RATE_CODES = { planned: 'p', watching: 'w', rewatching: 'r', completed: 'c', on_hold: 'h', dropped: 'd' };
+  var RATES_TTL = 15 * 60000;
+  var rates = null;
+  var rates_loading = null;
+  var tmdb_index = {};
+
+  function ratesData() {
+    if (rates && rates.user === auth().user_id) return rates;
+
+    var saved = readJson('tva_rates');
+
+    rates = saved.user && saved.user === auth().user_id ? saved : { user: auth().user_id, t: 0, r: {}, tot: {} };
+
+    return rates;
+  }
+
+  function ratesSave() {
+    Lampa.Storage.set('tva_rates', rates);
+  }
+
+  function ratesRefresh(force, done) {
+    done = done || function () {};
+
+    if (!loggedIn()) return done(false);
+
+    var data = ratesData();
+
+    if (!force && Date.now() - data.t < RATES_TTL) return done(true);
+    if (rates_loading) return rates_loading.push(done);
+
+    rates_loading = [done];
+
+    var finish = function (ok) {
+      var list = rates_loading;
+
+      rates_loading = null;
+      list.forEach(function (cb) { cb(ok); });
+    };
+
+    var user = auth().user_id;
+    var all = [];
+
+    var page = function (n) {
+      withToken(function (token) {
+        shiki({ method: 'GET', path: '/api/v2/user_rates?user_id=' + user + '&target_type=Anime&page=' + n + '&limit=1000', token: token }, function (list) {
+          list = Array.isArray(list) ? list : [];
+          all = all.concat(list);
+
+          if (list.length >= 1000 && n < 20) return page(n + 1);
+
+          var r = {};
+
+          all.forEach(function (x) {
+            if (RATE_CODES[x.status]) r[x.target_id] = [RATE_CODES[x.status], x.episodes || 0];
+          });
+
+          rates = { user: user, t: Date.now(), r: r, tot: data.tot || {} };
+
+          loadTotals(function () {
+            ratesSave();
+            buildTmdbIndex(function () {
+              decorateAll();
+              finish(true);
+            });
+          });
+        }, function () { finish(false); });
+      }, function () { finish(false); });
+    };
+
+    page(1);
+  }
+
+  // Сколько серий в тайтле — для «16/24» у того, что смотрю, отложил или бросил
+  function loadTotals(done) {
+    var ids = Object.keys(rates.r).filter(function (id) { return 'wrhd'.indexOf(rates.r[id][0]) >= 0; });
+    var batch = function () {
+      if (!ids.length) return done();
+
+      var part = ids.splice(0, 50);
+
+      gql('{ animes(ids: ' + arg(part.join(',')) + ', limit: 50, censored: false) { id episodes episodesAired } }', function (data) {
+        (data.animes || []).forEach(function (a) { rates.tot[a.id] = a.episodes || a.episodesAired || 0; });
+        batch();
+      }, function () { done(); });
+    };
+
+    batch();
+  }
+
+  // Своё изменение (статус из меню, досмотренные серии) — сразу в список на устройстве
+  function rateLocal(id, status, episodes, total) {
+    if (!loggedIn()) return;
+
+    var data = ratesData();
+
+    if (status && RATE_CODES[status]) data.r[id] = [RATE_CODES[status], episodes || 0];
+    else delete data.r[id];
+
+    if (total) data.tot[id] = total;
+
+    ratesSave();
+    buildTmdbIndex(decorateAll);
+  }
+
+  // Карточки TMDB: id Shikimori → id TMDB по карте (те же маленькие файлы, по 6 сразу)
+  function buildTmdbIndex(done) {
+    var data = ratesData();
+    var ids = Object.keys(data.r);
+    var shards = {};
+
+    ids.forEach(function (id) { shards[id % 100] = true; });
+
+    var names = Object.keys(shards);
+    var running = 0;
+    var finished = false;
+
+    var complete = function () {
+      if (finished) return;
+
+      finished = true;
+
+      var index = {};
+      var found = readJson('tva_map2');
+
+      ids.forEach(function (id) {
+        var m = (map_mem['m/' + ('0' + (id % 100)).slice(-2)] || {})[id];
+        var key = m ? (m[0] === 'm' ? 'movie' : 'tv') + m[1] : found[id] ? found[id].method + found[id].id : '';
+        var season = m ? m[2] || 1 : found[id] && found[id].season || 1;
+
+        if (!key) return;
+
+        (index[key] = index[key] || []).push({ id: +id, season: season, code: data.r[id][0], episodes: data.r[id][1] });
+      });
+
+      tmdb_index = index;
+      done();
+    };
+
+    var next = function () {
+      if (!names.length) {
+        if (!running) complete();
+        return;
+      }
+
+      running++;
+
+      mapShard('m', +names.shift(), function () {
+        running--;
+        next();
+      });
+    };
+
+    if (!names.length) return complete();
+
+    for (var i = 0; i < 6; i++) next();
+  }
+
+  // Что показать на постере: смотрю → «16/24», отложено, просмотрено → ✓, запланировано, брошено
+  function markFor(card) {
+    if (!card || !loggedIn() || !rates) return null;
+
+    var list;
+
+    if (card.shiki) {
+      var r = rates.r[card.shiki.id];
+
+      if (!r) return null;
+
+      list = [{ id: card.shiki.id, season: 1, code: r[0], episodes: r[1], total: card.shiki.episodes }];
+    } else {
+      if (!card.id || (card.source && card.source !== 'tmdb' && card.source !== 'cub')) return null;
+
+      list = tmdb_index[(card.original_name || card.first_air_date || card.number_of_seasons || card.name && !card.title ? 'tv' : 'movie') + card.id];
+
+      if (!list) return null;
+    }
+
+    var pick = function (codes) {
+      var hit = list.filter(function (x) { return codes.indexOf(x.code) >= 0; });
+
+      return hit.sort(function (a, b) { return b.season - a.season; })[0];
+    };
+
+    var x = pick('wr') || pick('h') || pick('c') || pick('p') || pick('d');
+
+    if (!x) return null;
+
+    return { code: x.code, episodes: x.episodes, total: x.total || rates.tot[x.id] || 0 };
+  }
+
+  var MARK_ICONS = {
+    c: '<svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    w: '<svg viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5z" fill="currentColor"/></svg>',
+    h: '<svg viewBox="0 0 24 24"><path d="M8 5h3v14H8zM13 5h3v14h-3z" fill="currentColor"/></svg>',
+    p: '<svg viewBox="0 0 24 24"><path d="M7 4h10v16l-5-3.5L7 20z" fill="currentColor"/></svg>',
+    d: '<svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg>'
+  };
+
+  function decorate(el) {
+    var view = el.querySelector('.card__view');
+
+    if (!view) return;
+
+    var old = view.querySelector('.tva-mark');
+    var m = field('tva_marks', true) ? markFor(el.card_data) : null;
+
+    if (!m) {
+      if (old) old.remove();
+      return;
+    }
+
+    var code = m.code === 'r' ? 'w' : m.code;
+    var text = 'wh'.indexOf(code) >= 0 && m.episodes ? m.episodes + (m.total ? '/' + m.total : '') : '';
+    var sign = code + '|' + text;
+
+    if (old && old.getAttribute('data-sign') === sign) return;
+    if (old) old.remove();
+
+    var mark = document.createElement('div');
+
+    mark.className = 'tva-mark tva-mark--' + code;
+    mark.setAttribute('data-sign', sign);
+    mark.innerHTML = MARK_ICONS[code] + (text ? '<span></span>' : '');
+
+    if (text) mark.querySelector('span').textContent = text;
+
+    view.appendChild(mark);
+  }
+
+  function decorateAll() {
+    var cards = document.querySelectorAll('.card');
+
+    for (var i = 0; i < cards.length; i++) {
+      if (cards[i].card_data) decorate(cards[i]);
+    }
+  }
+
+  // Карточки появляются в строках по мере прокрутки — ловим их, как только попали на страницу
+  function initMarks() {
+    if (!window.MutationObserver) return;
+
+    var pending = [];
+    var timer = null;
+
+    var flush = function () {
+      timer = null;
+
+      var list = pending;
+
+      pending = [];
+
+      list.forEach(function (el) {
+        if (el.classList.contains('card')) {
+          if (el.card_data) decorate(el);
+        } else if (el.querySelectorAll) {
+          var cards = el.querySelectorAll('.card');
+
+          for (var i = 0; i < cards.length; i++) {
+            if (cards[i].card_data) decorate(cards[i]);
+          }
+        }
+      });
+    };
+
+    new MutationObserver(function (records) {
+      if (!loggedIn() || !rates) return;
+
+      records.forEach(function (rec) {
+        for (var i = 0; i < rec.addedNodes.length; i++) {
+          if (rec.addedNodes[i].nodeType === 1) pending.push(rec.addedNodes[i]);
+        }
+      });
+
+      if (pending.length && !timer) timer = setTimeout(flush, 50);
+    }).observe(document.body, { childList: true, subtree: true });
+
+    if (loggedIn()) {
+      ratesData();
+      buildTmdbIndex(decorateAll);
+      setTimeout(function () { ratesRefresh(false); }, 8000);
+    }
+
+    // Зашли в раздел «Аниме» — освежаем список (если прошло 15 минут)
+    Lampa.Listener.follow('activity', function (e) {
+      if (e.type === 'start' && e.object && e.object.source === 'shikimori' && e.component === 'main') ratesRefresh(false);
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Shikimori → «Торренты TV»: при открытии сериала tv.js спрашивает, сколько серий каждого
+  // сезона досмотрено по списку Shikimori, и отмечает их у себя («Продолжить» — со следующей).
+  // Свежие данные одного запроса (статусы всех частей сериала сразу); одно и то же число
+  // второй раз не переносится — снятая вручную отметка не вернётся
+  // ---------------------------------------------------------------------------
+
+  window.tvt_external_watched = function (movie, seasons, done) {
+    if (!loggedIn() || !field('tva_import', true) || !movie || !isAnimeMovie(movie)) return done([]);
+
+    shikiForTmdb(movie, function (entry) {
+      var jobs = seasons.map(function (s) {
+        return { s: s, parts: shikiForSeason(entry, s.season, s.air_date) };
+      }).filter(function (j) { return j.parts.length; });
+
+      var ids = [];
+
+      jobs.forEach(function (j) {
+        j.parts.forEach(function (p) {
+          if (ids.indexOf(p.id) < 0) ids.push(p.id);
+        });
+      });
+
+      if (!ids.length) return done([]);
+
+      gql('{ animes(ids: ' + arg(ids.slice(0, 50).join(',')) + ', limit: 50, censored: false) { id episodes episodesAired userRate { status episodes } } }', function (data) {
+        var by = {};
+
+        (data.animes || []).forEach(function (a) {
+          by[a.id] = a;
+
+          var ur = a.userRate;
+
+          if (ur && RATE_CODES[ur.status]) rateTouch(+a.id, ur.status, ur.episodes, a.episodes || a.episodesAired);
+        });
+
+        var pulled = readJson('tva_pulled');
+        var sent = readJson('tva_sent');
+        var out = [];
+
+        jobs.forEach(function (j) {
+          var watched = 0;
+
+          for (var i = 0; i < j.parts.length; i++) {
+            var a = by[j.parts[i].id];
+            var ur = a && a.userRate;
+            var total = a && (a.episodes || a.episodesAired) || j.parts[i].episodes || 0;
+
+            if (!ur) break;
+
+            // Просмотрено или пересматриваю — часть досмотрена целиком
+            if ((ur.status === 'completed' || ur.status === 'rewatching') && total) {
+              watched += total;
+              continue;
+            }
+
+            watched += ur.episodes || 0;
+            break;
+          }
+
+          watched = Math.min(watched, j.s.episodes || watched);
+
+          var key = movie.id + ':' + j.s.season;
+
+          if (watched > (pulled[key] || 0) && watched > (j.s.watched || 0)) out.push({ season: j.s.season, watched: watched });
+
+          if (watched > 0) {
+            pulled[key] = Math.max(pulled[key] || 0, watched);
+            sent[key] = Math.max(sent[key] || 0, watched);
+          }
+        });
+
+        Lampa.Storage.set('tva_pulled', pulled);
+        Lampa.Storage.set('tva_sent', sent);
+
+        if (changed_rates) {
+          changed_rates = false;
+          ratesSave();
+          buildTmdbIndex(decorateAll);
+        }
+
+        done(out);
+      }, function () { done([]); }, { auth: true, fresh: true, priority: true });
+    }, function () { done([]); });
+  };
+
+  var changed_rates = false;
+
+  // Статус тайтла с сервера — поправить список на устройстве без записи на диск каждого
+  function rateTouch(id, status, episodes, total) {
+    var data = ratesData();
+    var cur = data.r[id];
+    var code = RATE_CODES[status];
+
+    if (!cur || cur[0] !== code || cur[1] !== (episodes || 0)) {
+      data.r[id] = [code, episodes || 0];
+      changed_rates = true;
+    }
+
+    if (total && data.tot[id] !== total) {
+      data.tot[id] = total;
+      changed_rates = true;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // «Ещё» в заголовке строки: в Lampa на него можно нажать только мышью или пальцем —
+  // в разделе «Аниме» до него теперь доходит и пульт: вверх с карточек строки
+  // ---------------------------------------------------------------------------
+
+  function initLineMore() {
+    var add = Lampa.Controller.add;
+
+    Lampa.Controller.add = function (name, ctrl) {
+      try {
+        if (name === 'items_line' && ctrl && ctrl.link) patchLine(ctrl);
+      } catch (e) {
+        console.log('Anime', 'line more', e);
+      }
+
+      return add.apply(this, arguments);
+    };
+  }
+
+  function patchLine(ctrl) {
+    var act = Lampa.Activity.active && Lampa.Activity.active();
+
+    if (!act || act.source !== 'shikimori') return;
+
+    var link = ctrl.link;
+    var root = link.render ? link.render(true) : link.html;
+
+    root = root && root.jquery ? root[0] : root;
+
+    if (!root || !root.querySelector) return;
+
+    var on_button = false;
+    var last_card = null;
+    var button = function () { return root.querySelector('.items-line__head .items-line__more'); };
+    var body = function () { return root.querySelector('.items-line__body') || root; };
+
+    var back = function () {
+      on_button = false;
+      Lampa.Controller.collectionFocus(last_card && last_card.offsetParent !== null ? last_card : false, body());
+    };
+
+    var wrap = function (key, fn) {
+      var orig = ctrl[key];
+
+      ctrl[key] = function () {
+        if (fn.apply(this, arguments) === false && orig) return orig.apply(this, arguments);
+      };
+    };
+
+    wrap('toggle', function () {
+      on_button = false;
+      return false;
+    });
+
+    wrap('up', function () {
+      var b = button();
+
+      if (on_button || !b || b.offsetParent === null) {
+        on_button = false;
+        return false;
+      }
+
+      last_card = body().querySelector('.selector.focus') || null;
+      on_button = true;
+      Lampa.Controller.collectionAppend(b);
+      Lampa.Controller.collectionFocus(b, root);
+    });
+
+    wrap('down', function () {
+      if (!on_button) return false;
+      back();
+    });
+
+    wrap('left', function () {
+      if (!on_button) return false;
+      back();
+    });
+
+    wrap('right', function () {
+      if (!on_button) return false;
+    });
+  }
+
+  // ---------------------------------------------------------------------------
   // Настройки
   // ---------------------------------------------------------------------------
 
@@ -1449,6 +1939,19 @@
     if (a.refresh_token && a.user_id) return 'Вход выполнен: ' + (a.nickname || a.user_id);
 
     return 'Вход не выполнен';
+  }
+
+  function ratesText() {
+    if (!loggedIn()) return 'После входа';
+
+    var data = ratesData();
+    var n = Object.keys(data.r).length;
+
+    if (!data.t) return 'Ещё не загружен';
+
+    var d = new Date(data.t);
+
+    return n + ' тайтлов, обновлён в ' + ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
   }
 
   function updateStatus() {
@@ -1565,6 +2068,31 @@
 
     Lampa.SettingsApi.addParam({
       component: 'tva_anime',
+      param: { name: 'tva_import', type: 'trigger', default: true },
+      field: { name: 'Брать серии из Shikimori', description: 'При открытии сериала в «Торренты TV» серии, отмеченные на Shikimori, отмечаются просмотренными, «Продолжить» — со следующей' }
+    });
+
+    Lampa.SettingsApi.addParam({
+      component: 'tva_anime',
+      param: { name: 'tva_marks', type: 'trigger', default: true },
+      field: { name: 'Отметки на постерах', description: '✓ — просмотрено, ▶ 16/24 — смотрю, а также отложено, запланировано, брошено' },
+      onChange: function () { setTimeout(decorateAll, 100); }
+    });
+
+    Lampa.SettingsApi.addParam({
+      component: 'tva_anime',
+      param: { name: 'tva_rates_now', type: 'button' },
+      field: { name: 'Обновить список Shikimori', description: ratesText() },
+      onChange: function () {
+        $('[data-name="tva_rates_now"] .settings-param__descr').text('Загружаю…');
+        ratesRefresh(true, function (ok) {
+          $('[data-name="tva_rates_now"] .settings-param__descr').text(ok ? ratesText() : 'Не получилось загрузить список');
+        });
+      }
+    });
+
+    Lampa.SettingsApi.addParam({
+      component: 'tva_anime',
       param: { name: 'tva_logout', type: 'button' },
       field: { name: 'Выйти на этом устройстве' },
       onChange: logout
@@ -1578,6 +2106,13 @@
       '.tva-login__text{flex:1;min-width:14em;font-size:1.1em;line-height:1.4}' +
       '.tva-login__url{width:100%;font-size:.8em;opacity:.6;word-break:break-all}' +
       '.rate--shiki>div:first-child{color:#73b6ff}' +
+      '.tva-mark{position:absolute;top:.5em;right:.5em;z-index:2;display:flex;align-items:center;gap:.2em;padding:.25em .4em;border-radius:.5em;background:rgba(0,0,0,.7);color:#fff;font-size:.95em;font-weight:600;line-height:1}' +
+      '.tva-mark svg{width:1.1em;height:1.1em}' +
+      '.tva-mark--c{background:#2e9d4c}' +
+      '.tva-mark--w{background:#2f7de1}' +
+      '.tva-mark--h{background:#c7861b}' +
+      '.tva-mark--p{background:rgba(0,0,0,.7)}' +
+      '.tva-mark--d{background:rgba(90,90,90,.85)}' +
       '</style>');
   }
 
@@ -1597,6 +2132,8 @@
     initRating();
     initCardMenu();
     initProgress();
+    initMarks();
+    initLineMore();
 
     // Вход сделан на другом устройстве — подхватываем
     if (!loggedIn()) setTimeout(function () { pullAuth(false); }, 6000);
@@ -1604,7 +2141,7 @@
     console.log('Anime', 'started', VERSION);
   }
 
-  window.tva_api = { version: VERSION, login: login, phoneKeys: phoneKeys, phoneCode: phoneCode, parseKeys: parseKeys, exchange: function (code) { exchangeCode(code, clientKeys()); }, pullAuth: pullAuth, findTmdb: findTmdb, shikiForTmdb: shikiForTmdb, shikiForSeason: shikiForSeason, baseName: baseName, gql: gql };
+  window.tva_api = { version: VERSION, login: login, phoneKeys: phoneKeys, phoneCode: phoneCode, parseKeys: parseKeys, exchange: function (code) { exchangeCode(code, clientKeys()); }, pullAuth: pullAuth, findTmdb: findTmdb, shikiForTmdb: shikiForTmdb, shikiForSeason: shikiForSeason, baseName: baseName, gql: gql, ratesRefresh: ratesRefresh, markFor: markFor, rates: function () { return rates; }, tmdbIndex: function () { return tmdb_index; } };
 
   if (window.appready) start();
   else {
