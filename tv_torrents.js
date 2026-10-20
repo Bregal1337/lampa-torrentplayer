@@ -7,7 +7,7 @@
   if (window.tvt_plugin_ready) return;
   window.tvt_plugin_ready = true;
 
-  var VERSION = '1.4.1';
+  var VERSION = '1.4.2';
 
   // ---------------------------------------------------------------------------
   // Разбор названия раздачи
@@ -2822,6 +2822,23 @@
 
   var SYNC_CATS = ['like', 'wath', 'book', 'history', 'look', 'viewed', 'scheduled', 'continued', 'thrown'];
   var SYNC_MAX_VIEWS = 3000;
+  var SYNC_PUSH_GAP = 10 * 60000;   // свои изменения — одним коммитом не чаще раза в 10 минут
+  var SYNC_FLUSH_GAP = 60000;       // при уходе из Lampa — сразу, если с прошлого коммита прошла минута
+
+  // Для закладки на другом устройстве хватает названия, постера, года и оценки: описание и
+  // прочее Lampa сама загрузит, когда карточку откроют. Так файл в разы меньше
+  var CARD_FIELDS = ['id', 'source', 'title', 'original_title', 'name', 'original_name', 'poster_path',
+    'release_date', 'first_air_date', 'vote_average', 'original_language', 'number_of_seasons', 'media_type'];
+
+  function slimCard(card) {
+    var out = {};
+
+    CARD_FIELDS.forEach(function (k) {
+      if (card[k] !== undefined && card[k] !== null && card[k] !== '') out[k] = card[k];
+    });
+
+    return out;
+  }
   var sync = { running: false, again: false, timer: null, due: 0, applying: false };
 
   function readJson(name) {
@@ -2958,7 +2975,7 @@
     var cards = {};
     var marks = {};
 
-    (fav.card || []).forEach(function (c) { cards[c.id] = c; });
+    (fav.card || []).forEach(function (c) { cards[c.id] = slimCard(c); });
 
     for (var k in journal) {
       if (k === '__init') continue;
@@ -3103,16 +3120,26 @@
     keys.forEach(function (h) { views[h] = merged.views[h]; });
 
     var cards = {};
+    var marks = {};
+    var old = Date.now() - 60 * 86400000;
 
     for (var k in merged.marks) {
-      if (!merged.marks[k].on) continue;
+      var m = merged.marks[k];
+
+      // Отметка «удалено» нужна, пока её не увидели другие устройства; через 60 дней её можно забыть
+      if (!m.on) {
+        if ((m.t || 0) > old) marks[k] = m;
+        continue;
+      }
+
+      marks[k] = m;
 
       var id = k.split(':').slice(1).join(':');
 
-      if (merged.cards[id]) cards[id] = merged.cards[id];
+      if (merged.cards[id]) cards[id] = slimCard(merged.cards[id]);
     }
 
-    return { v: 1, device: cfg.device, name: cfg.name, views: views, marks: merged.marks, cards: cards, titles: merged.titles };
+    return { v: 1, device: cfg.device, name: cfg.name, views: views, marks: marks, cards: cards, titles: merged.titles };
   }
 
   function syncStatus(text) {
@@ -3127,7 +3154,8 @@
     return pad(d.getDate()) + '.' + pad(d.getMonth() + 1) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
   }
 
-  function runSync(manual, retry) {
+  // manual — кнопка «Синхронизировать сейчас»; flush — уходим из Lampa, отправить накопленное
+  function runSync(manual, retry, flush) {
     var cfg = syncConfig();
 
     if (!cfg) {
@@ -3221,15 +3249,32 @@
           // Ничего не поменялось — коммит не делаем
           if (own_sha && String(Lampa.Storage.get('tvt_sync_pushed', '')) === hash) return saved();
 
+          // Свои изменения отправляем не чаще раза в 10 минут: копятся и уходят одним коммитом.
+          // Сразу — по кнопке, при уходе из Lampa (в плеер или выход) и при первой записи файла
+          var since = Date.now() - (parseInt(Lampa.Storage.get('tvt_sync_pushed_at', '0'), 10) || 0);
+          var allowed = !own_sha || manual || (flush && since >= SYNC_FLUSH_GAP) || since >= SYNC_PUSH_GAP;
+
+          if (!allowed) {
+            var wait = SYNC_PUSH_GAP - since;
+
+            Lampa.Storage.set('tvt_sync_seen', seen);
+            done(clock() + (got ? ', получено изменений: ' + got : '') + ', свои изменения уйдут через ' + Math.max(1, Math.ceil(wait / 60000)) + ' мин');
+            scheduleSync(wait + 1000);
+            return;
+          }
+
           var body = { message: cfg.name + ' / ' + cfg.device, content: b64encode(content) };
 
           if (own_sha) body.sha = own_sha;
 
-          gh(cfg, 'PUT', base + '/' + encodeURIComponent(own_name), body, saved, function (status, message) {
+          gh(cfg, 'PUT', base + '/' + encodeURIComponent(own_name), body, function () {
+            Lampa.Storage.set('tvt_sync_pushed_at', Date.now());
+            saved();
+          }, function (status, message) {
             // Файл успели поменять (например, после сброса данных Lampa на этом же устройстве) — повторяем один раз
             if ((status === 409 || status === 422) && !retry) {
               sync.running = false;
-              runSync(manual, true);
+              runSync(manual, true, flush);
             } else fail(status, message);
           });
         };
@@ -3239,8 +3284,10 @@
     }, fail);
   }
 
-  function scheduleSync(ms) {
+  function scheduleSync(ms, flush) {
     if (!syncConfig()) return;
+
+    if (flush) sync.flush = true;
 
     var due = Date.now() + ms;
 
@@ -3249,21 +3296,24 @@
     clearTimeout(sync.timer);
     sync.due = due;
     sync.timer = setTimeout(function () {
+      var f = sync.flush;
+
       sync.timer = null;
-      runSync(false);
+      sync.flush = false;
+      runSync(false, false, f);
     }, ms);
   }
 
   function initSync() {
-    // Изменения отправляем с задержкой: закладки — быстро, прогресс встроенного плеера — не чаще раза в 1,5 минуты
+    // Изменения забираем и складываем быстро, а коммит делается не чаще раза в 10 минут (см. runSync)
     if (Lampa.Timeline.listener) Lampa.Timeline.listener.follow('update', function () { scheduleSync(90000); });
     if (Lampa.Favorite.listener) Lampa.Favorite.listener.follow('add,added,remove', function () { if (!sync.applying) scheduleSync(5000); });
-    if (Lampa.Player && Lampa.Player.listener) Lampa.Player.listener.follow('destroy', function () { scheduleSync(3000); });
+    if (Lampa.Player && Lampa.Player.listener) Lampa.Player.listener.follow('destroy', function () { scheduleSync(3000, true); });
 
-    // Ушли в MX/VLC или свернули Lampa — отправляем сразу, вернулись — забираем свежее
+    // Ушли в MX/VLC или свернули Lampa — отправляем накопленное, вернулись — забираем свежее
     // и отмечаем серии, которые плеер прошёл по плейлисту
     document.addEventListener('visibilitychange', function () {
-      scheduleSync(document.hidden ? 0 : 3000);
+      scheduleSync(document.hidden ? 0 : 3000, document.hidden);
 
       if (!document.hidden) setTimeout(recoverAllSessions, 2500);
     });
