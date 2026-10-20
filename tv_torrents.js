@@ -7,7 +7,7 @@
   if (window.tvt_plugin_ready) return;
   window.tvt_plugin_ready = true;
 
-  var VERSION = '1.6.1';
+  var VERSION = '1.6.2';
 
   // ---------------------------------------------------------------------------
   // Разбор названия раздачи
@@ -1689,6 +1689,14 @@
     return split || tail ? { plan: plan, tail: tail } : null;
   }
 
+  // Lampa сама режет 1-й сезон TMDB по перерывам в 90 дней и отдаёт только первую часть,
+  // а все серии кладёт в episodes_original — берём все
+  function tmdbEpisodes(json) {
+    var list = json && (json.episodes_original || json.episodes);
+
+    return Array.isArray(list) ? list : [];
+  }
+
   function airTime(ep) {
     var t = ep && ep.air_date ? Date.parse(ep.air_date) : NaN;
 
@@ -1733,7 +1741,7 @@
       var p = plan.plan[pi];
       var t = p.tmdb;
       var json = data[t.season_number] || data[t.season_number + ''];
-      var list = (json && json.episodes || []).filter(function (e) { return e.episode_number > 0; });
+      var list = tmdbEpisodes(json).filter(function (e) { return e.episode_number > 0; });
 
       list.sort(function (a, b) { return a.episode_number - b.episode_number; });
 
@@ -2569,7 +2577,7 @@
       Lampa.Api.seasons(movie, [n], function (data) {
         var json = data && (data[n] || data[n + '']);
 
-        seasons_data[n] = json && json.episodes ? json : { episodes: [] };
+        seasons_data[n] = { episodes: tmdbEpisodes(json) };
         call();
       });
     }
@@ -3093,10 +3101,22 @@
         done();
       };
 
-      if (!want) return finish();
+      // Разбор сезонов — в консоль Lampa (меню → Консоль), чтобы было видно, почему сезон не разрезан
+      var rel = releaseSeasons(items);
+      var log = function (msg) {
+        console.log('TV Torrents', 'сезоны', movie.name || movie.title, '| раздачи: ' + Object.keys(rel).map(function (s) { return s + 'с=' + (rel[s].count || '?') + '/' + rel[s].seen; }).join(' ') + ' | TMDB: ' + tmdbSeasons(movie).map(function (s) { return s.season_number + 'с=' + s.episode_count; }).join(' ') + ' | ' + msg);
+      };
+
+      if (!want) {
+        if (isAnimation(movie)) log('без изменений');
+        return finish();
+      }
 
       var nums = tmdbSeasons(movie).map(function (s) { return s.season_number; });
-      var timer = setTimeout(finish, 15000);
+      var timer = setTimeout(function () {
+        log('серии TMDB не загрузились за 15 с');
+        finish();
+      }, 15000);
 
       Lampa.Api.seasons(movie, nums, function (data) {
         clearTimeout(timer);
@@ -3106,6 +3126,10 @@
         try {
           var list = splitSeasons(movie, data || {}, want);
 
+          log('план ' + want.plan.map(function (p) { return p.tmdb.season_number + '→' + p.seasons.join(',') + '(' + p.counts.join(',') + ')'; }).join(' ') + (want.tail ? ' +хвост' : '') +
+            ' | серий TMDB: ' + nums.map(function (n) { var j = data && (data[n] || data[n + '']); return n + 'с=' + (j ? tmdbEpisodes(j).length : 'нет'); }).join(' ') +
+            ' | итог: ' + (list ? list.map(function (p) { return p.season_number + 'с=' + p.episode_count; }).join(' ') : 'не разрезан'));
+
           if (list) {
             season_splits[movie.id] = { list: list };
             list.forEach(function (p) { seasons_data[p.season_number] = { episodes: p.episodes }; });
@@ -3113,13 +3137,13 @@
             nums.forEach(function (n) {
               var json = data && (data[n] || data[n + '']);
 
-              if (json && json.episodes) seasons_data[n] = json;
+              if (json) seasons_data[n] = { episodes: tmdbEpisodes(json) };
             });
           }
 
           renderHead();
         } catch (e) {
-          console.log('TV Torrents', 'season split', e);
+          log('ошибка: ' + (e && e.message || e));
         }
 
         finish();
