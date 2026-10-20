@@ -7,7 +7,7 @@
   if (window.tvt_plugin_ready) return;
   window.tvt_plugin_ready = true;
 
-  var VERSION = '1.6.0';
+  var VERSION = '1.6.1';
 
   // ---------------------------------------------------------------------------
   // Разбор названия раздачи
@@ -209,9 +209,13 @@
     var m;
     var out = [];
 
+    // «(1 сезон: 1-24 серии из 24)» — это серии, а не сезоны 1–24
     m = lower.match(/(\d{1,2})\s*[-–]\s*(\d{1,2})\s*сезон/) ||
-      lower.match(/сезон[ыа]?:?\s*(\d{1,2})\s*[-–]\s*(\d{1,2})/) ||
-      lower.match(/\bs(\d{1,2})\s*[-–]\s*s?(\d{1,2})\b/) ||
+      lower.match(/сезон[ыа]?:?\s*(\d{1,2})\s*[-–]\s*(\d{1,2})(?!\s*(?:сери|эп|из|з\s|\d))/) ||
+      // «S01-S03», «S01-03», но не «S2 - 10» (10-я серия 2 сезона)
+      lower.match(/\bs(\d{1,2})\s*[-–]\s*s(\d{1,2})\b/) ||
+      lower.match(/\bs(\d{1,2})[-–](\d{1,2})\b/) ||
+      lower.match(/\b(\d{1,2})\s*[-–]\s*(\d{1,2})x\d{2,3}\b/) ||
       lower.match(/seasons?\s*(\d{1,2})\s*[-–]\s*(\d{1,2})/);
 
     if (m) {
@@ -237,6 +241,25 @@
     if (m) out.push(parseInt(m[1], 10));
 
     return out;
+  }
+
+  // Сколько серий в сезоне по словам раздачи: «1-24 серии из 24», «(23 из 23)», «[02x01-06 из 23]»,
+  // «Серій 6 з 12», «[2023, TV, 11 эп.]». Часть сезона («Часть 1: 1-13 из 13») не считаем — это не весь сезон,
+  // а «Части 1-2» — весь
+  function parseTotal(lower) {
+    var clean = lower.replace(/\+\s*(спешл|спэшл|special|ova|sp)\S*/g, '');
+
+    if (/(?:част[ьиа]|частина|part|cour)\s*\d+(?!\s*[-–]\s*\d)|фильм|movie|\bova\b|спешл|спэшл/.test(clean)) return 0;
+
+    var m = lower.match(/(\d{1,4})\s*(?:[а-яё.]+\s*)?(?:из|з|of)\s*(\d{1,4})(?!\d|\s*(?:том|глав))/) ||
+      lower.match(/\btv,\s*(\d{1,4})\s*(?:эп|ep)/) ||
+      lower.match(/\bтв,\s*(\d{1,4})\s*эп/);
+
+    if (!m) return 0;
+
+    var total = parseInt(m[2] || m[1], 10);
+
+    return total > 0 && total <= 400 ? total : 0;
   }
 
   function parseEpisodes(lower) {
@@ -442,6 +465,7 @@
     if (!r.types.length && !r.studios.length && /\beng\b|original|оригинал/.test(lower)) r.types.push('orig');
 
     r.seasons = info.seasons && info.seasons.length ? info.seasons.map(function (s) { return parseInt(s, 10); }).filter(function (s) { return s > 0; }) : parseSeasons(lower);
+    r.total = parseTotal(lower);
     r.episodes = parseEpisodes(lower);
     r.ep_range = parseEpisodeRange(lower);
 
@@ -1527,28 +1551,142 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Аниме: TMDB часто держит все части одним сезоном («Магическая битва»: 1 сезон,
-  // 59 серий), а на трекерах это «1 сезон» (24), «2 сезон» (23), «3 сезон» (12).
-  // Если раздачи знают сезоны, которых в TMDB нет, режем сезоны TMDB по самым
-  // длинным перерывам между датами выхода серий и нумеруем серии внутри частей.
+  // Аниме: TMDB одни тайтлы делит на сезоны как трекеры, а другие держит одним сезоном
+  // («Магическая битва»: 1 сезон, 59 серий; на трекерах «1 сезон» 24, «2 сезон» 23, «3 сезон» 12).
+  // Структуру берём из самих раздач: сколько серий в каждом сезоне — по большинству названий
+  // («2 сезон: 1-23 серии из 23», «[ТВ-2] (23 из 23)», «[02x01-06 из 23]»). Сезон TMDB режем,
+  // только если в него укладываются несколько сезонов трекеров; места разрезов уточняем по
+  // перерывам между датами выхода серий. Где TMDB и трекеры совпадают, ничего не меняется.
   // ---------------------------------------------------------------------------
 
   var season_splits = {};
-  var SPLIT_MIN_GAP = 60 * 86400000;
+  var SPLIT_GAP = 45 * 86400000;      // перерыв между сериями, после которого начинается новый сезон
+  var SPLIT_BIG_GAP = 90 * 86400000;  // такой перерыв — новый сезон, даже если раздачи о нём не говорят
 
-  // Сколько сезонов знают раздачи (сезон должен встретиться хотя бы в двух, чтобы одна ошибка не решала)
-  function splitWanted(movie, items) {
-    var tmdb = tmdbSeasons(movie);
-    var count = {};
-    var max = 0;
+  // Сезоны по раздачам: {номер: {count — серий по большинству, seen — в скольких раздачах}}, плюс суммы
+  // для раздач на несколько сезонов («1-3 сезон: 1-35 серии из 35»)
+  function releaseSeasons(items) {
+    var out = {};
+    var ranges = [];
 
     items.forEach(function (it) {
-      it.r.seasons.forEach(function (s) { count[s] = (count[s] || 0) + 1; });
+      var r = it.r;
+
+      r.seasons.forEach(function (s) {
+        if (!out[s]) out[s] = { votes: {}, seen: 0, count: 0 };
+        out[s].seen++;
+      });
+
+      if (!r.total) return;
+
+      if (r.seasons.length === 1) {
+        var v = out[r.seasons[0]].votes;
+
+        v[r.total] = (v[r.total] || 0) + 1;
+      } else if (r.seasons.length > 1) {
+        ranges.push({ from: r.seasons[0], to: r.seasons[r.seasons.length - 1], total: r.total });
+      }
     });
 
-    for (var s in count) if (count[s] >= 2 && +s > max) max = +s;
+    for (var s in out) {
+      var best = 0;
+      var votes = out[s].votes;
 
-    return tmdb.length && tmdb.length <= 6 && max > tmdb.length && max <= tmdb.length + 12 ? max : 0;
+      for (var k in votes) if (!best || votes[k] > votes[best] || (votes[k] === votes[best] && +k < +best)) best = +k;
+
+      out[s].count = best;
+    }
+
+    // Серий сезона не назвала ни одна раздача, но есть сумма по нескольким сезонам — вычитаем известные
+    // (раздачи с суммой тоже ошибаются, поэтому и здесь берём то, что выходит чаще)
+    var derived = {};
+
+    ranges.forEach(function (g) {
+      var unknown = [];
+      var known = 0;
+
+      for (var i = g.from; i <= g.to; i++) {
+        if (!out[i]) out[i] = { votes: {}, seen: 0, count: 0 };
+        if (out[i].count) known += out[i].count;
+        else unknown.push(i);
+      }
+
+      if (unknown.length === 1 && g.total - known > 0) {
+        var d = derived[unknown[0]] = derived[unknown[0]] || {};
+
+        d[g.total - known] = (d[g.total - known] || 0) + 1;
+      }
+    });
+
+    for (var u in derived) {
+      var pick = 0;
+
+      for (var c in derived[u]) if (!pick || derived[u][c] > derived[u][pick]) pick = +c;
+
+      out[u].count = pick;
+    }
+
+    return out;
+  }
+
+  // План без серий TMDB: какие сезоны TMDB на какие сезоны трекеров делятся. null — делить нечего
+  function isAnimation(movie) {
+    return movie.original_language === 'ja' || (movie.genres || []).some(function (g) { return g.id === 16 || /аниме|мульт|anim/i.test(g.name || ''); });
+  }
+
+  function planSplit(movie, items) {
+    var tmdb = tmdbSeasons(movie);
+    var rel = releaseSeasons(items);
+    var max = 0;
+
+    // У игровых сериалов сезоны TMDB и трекеров совпадают, а перерывы посреди сезона бывают — не трогаем
+    if (!isAnimation(movie) || !tmdb.length || tmdb.length > 8) return null;
+
+    // Сезон есть, если его назвали хотя бы две раздачи или одна — с числом серий
+    for (var s in rel) if ((rel[s].seen >= 2 || rel[s].count) && +s > max && +s <= 40) max = +s;
+
+    var plan = [];
+    var next = 1;
+    var split = false;
+
+    tmdb.forEach(function (t, ti) {
+      var left_tmdb = tmdb.length - ti - 1;
+      var group = [];
+      var sum = 0;
+
+      if (next <= max) {
+        group.push(next);
+        sum = rel[next] ? rel[next].count : 0;
+
+        // Берём в этот сезон TMDB ещё сезоны трекеров, пока остальным сезонам TMDB их хватает
+        // и серий по раздачам не больше, чем в сезоне TMDB
+        while (next + group.length <= max && max - (next + group.length - 1) > left_tmdb) {
+          var cand = next + group.length;
+          var c = rel[cand] ? rel[cand].count : 0;
+
+          if (sum && c && sum + c > t.episode_count + 2) break;
+
+          group.push(cand);
+          sum = sum && c ? sum + c : 0;
+        }
+      }
+
+      if (group.length > 1) split = true;
+
+      plan.push({ tmdb: t, seasons: group.length ? group : [next], counts: (group.length ? group : [next]).map(function (n) { return rel[n] ? rel[n].count : 0; }) });
+      next = (group.length ? group[group.length - 1] : next) + 1;
+    });
+
+    // Последний сезон TMDB заметно длиннее последнего сезона трекеров — возможно, следующий сезон
+    // трекеры ещё не назвали (вышла только первая часть); проверим по датам, когда будут серии
+    var last = plan[plan.length - 1];
+    var known = 0;
+
+    last.counts.forEach(function (c) { known += c; });
+
+    var tail = last.counts.every(function (c) { return c > 0; }) && last.tmdb.episode_count >= known + 3;
+
+    return split || tail ? { plan: plan, tail: tail } : null;
   }
 
   function airTime(ep) {
@@ -1557,82 +1695,122 @@
     return isNaN(t) ? 0 : t;
   }
 
-  // data — серии сезонов TMDB {номер: {episodes}}; want — сколько сезонов должно получиться
-  function splitSeasons(movie, data, want) {
-    var tmdb = tmdbSeasons(movie);
-    var eps = {};
-    var gaps = [];
+  // Перерыв перед серией i (между i-1 и i), мс
+  function gapBefore(list, i) {
+    var a = airTime(list[i - 1]);
+    var b = airTime(list[i]);
 
-    tmdb.forEach(function (s) {
-      var json = data[s.season_number] || data[s.season_number + ''];
+    return a && b ? b - a : 0;
+  }
+
+  // Ближайший к цели перерыв (±2 серии): раздачи иногда считают на серию больше или меньше
+  function snapCut(list, target) {
+    var best = -1;
+
+    for (var d = 0; d <= 2; d++) {
+      [target - d, target + d].forEach(function (i) {
+        if (best < 0 && i > 0 && i < list.length && gapBefore(list, i) >= SPLIT_GAP) best = i;
+      });
+    }
+
+    return best > 0 ? best : target;
+  }
+
+  // Следующий большой перерыв после серии from
+  function nextGap(list, from, min) {
+    for (var i = from + 1; i < list.length; i++) if (gapBefore(list, i) >= min) return i;
+
+    return -1;
+  }
+
+  // Серии TMDB {номер: {episodes}} + план → сезоны как у трекеров или null
+  function splitSeasons(movie, data, plan) {
+    var out = [];
+    var abs = 0;
+    var changed = false;
+
+    for (var pi = 0; pi < plan.plan.length; pi++) {
+      var p = plan.plan[pi];
+      var t = p.tmdb;
+      var json = data[t.season_number] || data[t.season_number + ''];
       var list = (json && json.episodes || []).filter(function (e) { return e.episode_number > 0; });
 
       list.sort(function (a, b) { return a.episode_number - b.episode_number; });
-      eps[s.season_number] = list;
 
-      for (var i = 1; i < list.length; i++) {
-        var a = airTime(list[i - 1]);
-        var b = airTime(list[i]);
+      if (!list.length) {
+        // Серий нет — сезон как есть (делить вслепую нельзя)
+        if (p.seasons.length > 1) return null;
 
-        if (a && b && b - a >= SPLIT_MIN_GAP) gaps.push({ season: s.season_number, at: i, len: b - a });
+        out.push({ season_number: p.seasons[0], episode_count: t.episode_count, air_date: t.air_date, poster_path: t.poster_path, tmdb_season: t.season_number, episodes: [] });
+        abs += t.episode_count;
+        continue;
       }
-    });
 
-    var need = want - tmdb.length;
+      var cuts = [];
+      var pos = 0;
+      var seasons = p.seasons.slice();
+      var counts = p.counts.slice();
 
-    if (gaps.length < need) return null;
+      for (var i = 0; i < seasons.length - 1; i++) {
+        var cut = counts[i] ? snapCut(list, pos + counts[i]) : nextGap(list, pos + 2, SPLIT_GAP);
 
-    gaps.sort(function (a, b) { return b.len - a.len; });
+        if (cut <= pos || cut >= list.length) return null;
 
-    var cuts = gaps.slice(0, need);
-    var out = [];
+        cuts.push(cut);
+        pos = cut;
+      }
 
-    tmdb.forEach(function (s) {
-      var list = eps[s.season_number];
-      var points = cuts.filter(function (g) { return g.season === s.season_number; }).map(function (g) { return g.at; });
+      // Хвост: в последнем сезоне TMDB после известных серий долгий перерыв — это следующий сезон
+      if (pi === plan.plan.length - 1 && plan.tail) {
+        var lc = counts[counts.length - 1];
+        var tail_cut = lc ? snapCut(list, pos + lc) : -1;
+
+        if (tail_cut > pos && tail_cut < list.length && gapBefore(list, tail_cut) >= SPLIT_BIG_GAP) {
+          cuts.push(tail_cut);
+          seasons.push(seasons[seasons.length - 1] + 1);
+        }
+      }
+
+      if (cuts.length) changed = true;
+
       var start = 0;
 
-      if (!list.length) list = null;
-
-      points.sort(function (a, b) { return a - b; }).concat([list ? list.length : s.episode_count]).forEach(function (end) {
-        var v = out.length + 1;
-        var part = list ? list.slice(start, end).map(function (ep, i) {
+      cuts.concat([list.length]).forEach(function (end, k) {
+        var v = seasons[k];
+        var part = list.slice(start, end).map(function (ep, i) {
           var c = {};
 
-          for (var k in ep) c[k] = ep[k];
+          for (var key in ep) c[key] = ep[key];
 
           c.tmdb_episode = ep.episode_number;
+          c.abs = abs + start + i + 1;
           c.episode_number = i + 1;
           c.season_number = v;
 
           return c;
-        }) : [];
-
-        out.push({
-          season_number: v,
-          episode_count: list ? part.length : s.episode_count,
-          air_date: part.length ? part[0].air_date : s.air_date,
-          poster_path: s.poster_path,
-          tmdb_season: s.season_number,
-          episodes: part
         });
 
+        out.push({ season_number: v, episode_count: part.length, air_date: part[0].air_date, poster_path: t.poster_path, tmdb_season: t.season_number, episodes: part });
         start = end;
       });
-    });
 
-    return out;
+      abs += list.length;
+    }
+
+    return changed ? out : null;
   }
 
-  // Серия по сквозному номеру внутри сезона TMDB («Jujutsu Kaisen - 25» → 2 сезон, 1 серия)
+  // Серия по номеру в сезоне TMDB («Jujutsu Kaisen - 25» → 2 сезон, 1 серия). Без сезона — по сквозному номеру
   function splitAbsolute(split, tmdb_season, e) {
     for (var i = 0; i < split.list.length; i++) {
       var p = split.list[i];
 
-      if (p.tmdb_season !== tmdb_season) continue;
-
       for (var j = 0; j < p.episodes.length; j++) {
-        if (p.episodes[j].tmdb_episode === e) return { season: p.season_number, episode: p.episodes[j].episode_number };
+        var ep = p.episodes[j];
+
+        if (tmdb_season ? p.tmdb_season === tmdb_season && ep.tmdb_episode === e : ep.abs === e) {
+          return { season: p.season_number, episode: ep.episode_number };
+        }
       }
     }
 
@@ -1669,7 +1847,7 @@
       return { season: s, episode: le };
     }
 
-    return splitAbsolute(split, split.list[0].tmdb_season, le) || { season: ls || 1, episode: le };
+    return splitAbsolute(split, 0, le) || { season: ls || 1, episode: le };
   }
 
   // Какую раздачу открыли последней: по ней понятно, какой это сезон, если в именах файлов его нет
@@ -2904,9 +3082,9 @@
       });
     };
 
-    // Раздачи знают больше сезонов, чем TMDB — грузим серии TMDB и режем сезоны по датам выхода
+    // Сезоны TMDB не совпадают с сезонами раздач — грузим серии TMDB и раскладываем их по сезонам раздач
     function prepareSeasons(done) {
-      var want = splitWanted(movie, items);
+      var want = planSplit(movie, items);
       var finished = false;
       var finish = function () {
         if (finished) return;
@@ -2958,7 +3136,7 @@
 
       if (part && p.episode <= part.episode_count) return p;
 
-      return splitAbsolute(split, split.list[0].tmdb_season, p.episode) || p;
+      return splitAbsolute(split, p.season, p.episode) || p;
     }
 
     this.afterLoad = function () {
@@ -4152,7 +4330,16 @@
     console.log('TV Torrents', 'started', VERSION);
   }
 
-  window.tvt_api = { parseRelease: parseRelease, buildSearchParams: buildSearchParams, sync: function () { runSync(true); }, version: VERSION };
+  // Для проверки разбора сезонов на сохранённых данных: результаты парсера + серии TMDB → сезоны
+  function testSeasons(movie, results, data) {
+    var items = results.map(function (el) { return { el: el, r: parseRelease(el) }; });
+    var plan = planSplit(movie, items);
+    var list = plan ? splitSeasons(movie, data, plan) : null;
+
+    return { plan: plan, seasons: (list || tmdbSeasons(movie)).map(function (s) { return s.season_number + ':' + s.episode_count; }), list: list };
+  }
+
+  window.tvt_api = { parseRelease: parseRelease, buildSearchParams: buildSearchParams, testSeasons: testSeasons, sync: function () { runSync(true); }, version: VERSION };
 
   if (window.appready) start();
   else {
