@@ -8,7 +8,7 @@
   // Карточки открываются обычной карточкой TMDB, поэтому кнопка «Торренты» работает как всегда.
   // ---------------------------------------------------------------------------
 
-  var VERSION = '1.4.1';
+  var VERSION = '1.5.0';
   var HOSTS = ['https://shikimori.io', 'https://shikimori.rip'];
   var REDIRECT = 'urn:ietf:wg:oauth:2.0:oob';
   var PAGE = 20;
@@ -17,7 +17,7 @@
   var SEASON_NAMES = { winter: 'Зима', spring: 'Весна', summer: 'Лето', fall: 'Осень' };
   var SEASON_ORDER = ['winter', 'spring', 'summer', 'fall'];
   var KIND_NAMES = { tv: 'Сериалы', movie: 'Фильмы', ova: 'OVA', ona: 'ONA', special: 'Спешлы' };
-  var ORDER_NAMES = { popularity: 'По популярности', ranked: 'По оценке', aired_on: 'По дате выхода' };
+  var ORDER_NAMES = { popularity: 'По популярности', ranked: 'По оценке', aired_on: 'По дате выхода', added: 'По дате добавления' };
   var STATE_NAMES = { ongoing: 'Онгоинги', anons: 'Анонсы', released: 'Вышедшие' };
 
   function field(name, def) {
@@ -274,13 +274,69 @@
     return card;
   }
 
-  // Подборка → строка Lampa (с кнопкой «Ещё»)
-  function line(title, p, call) {
-    gql('{ animes(' + animesArgs(p, 1) + ') { ' + ANIME_FIELDS + ' } }', function (data) {
+  // Свой список по дате добавления: эту дату знает только сам список (user_rates, created_at),
+  // поиск GraphQL сортирует лишь по полям тайтла. Берём id тайтлов статуса, новые — сверху,
+  // и грузим страницу тайтлов по этим id в том же порядке. Список держим 2 минуты
+  var added_cache = {};
+
+  function addedIds(status, ok, fail) {
+    var hit = added_cache[status];
+
+    if (hit && Date.now() - hit.t < 120000) return ok(hit.ids);
+
+    withToken(function (token) {
+      var all = [];
+
+      var page = function (n) {
+        shiki({ method: 'GET', path: '/api/v2/user_rates?user_id=' + auth().user_id + '&target_type=Anime&status=' + encodeURIComponent(status) + '&page=' + n + '&limit=1000', token: token }, function (list) {
+          list = Array.isArray(list) ? list : [];
+          all = all.concat(list);
+
+          if (list.length >= 1000 && n < 10) return page(n + 1);
+
+          all.sort(function (a, b) { return (b.created_at || '').localeCompare(a.created_at || ''); });
+
+          var ids = all.filter(function (x) { return x.status === status || !x.status; }).map(function (x) { return x.target_id; });
+
+          added_cache[status] = { t: Date.now(), ids: ids };
+          ok(ids);
+        }, fail);
+      };
+
+      page(1);
+    }, fail);
+  }
+
+  // Страница подборки: ok(карточки, есть ли следующая страница)
+  function pageOf(p, page, ok, fail) {
+    if (p.mylist && p.order === 'added') {
+      return addedIds(p.mylist, function (ids) {
+        var part = ids.slice((page - 1) * PAGE, page * PAGE);
+
+        if (!part.length) return ok([], false);
+
+        gql('{ animes(ids: ' + arg(part.join(',')) + ', limit: ' + PAGE + ', censored: false) { ' + ANIME_FIELDS + ' } }', function (data) {
+          var by = {};
+
+          (data.animes || []).forEach(function (a) { by[a.id] = a; });
+
+          ok(part.map(function (id) { return by[id]; }).filter(Boolean).map(shikiCard), ids.length > page * PAGE);
+        }, fail);
+      }, fail);
+    }
+
+    gql('{ animes(' + animesArgs(p, page) + ') { ' + ANIME_FIELDS + ' } }', function (data) {
       var list = (data.animes || []).map(shikiCard);
 
-      call({ title: title, results: list, url: buildQuery(p), source: 'shikimori', page: 1, total_pages: list.length >= PAGE ? 2 : 1 });
-    }, function () { call(); }, { auth: !!p.mylist });
+      ok(list, list.length >= PAGE);
+    }, fail, { auth: !!p.mylist });
+  }
+
+  // Подборка → строка Lampa (с кнопкой «Ещё»)
+  function line(title, p, call) {
+    pageOf(p, 1, function (list, more) {
+      call({ title: title, results: list, url: buildQuery(p), source: 'shikimori', page: 1, total_pages: more ? 2 : 1 });
+    }, function () { call(); });
   }
 
   // ---------------------------------------------------------------------------
@@ -297,7 +353,7 @@
 
     if (loggedIn()) {
       parts.push(function (call) { line('Смотрю', { mylist: 'watching', order: 'aired_on' }, call); });
-      parts.push(function (call) { line('Запланировано', { mylist: 'planned', order: 'popularity' }, call); });
+      parts.push(function (call) { line('Запланировано', { mylist: 'planned', order: 'added' }, call); });
     }
 
     parts.push(function (call) { line('Онгоинги: ' + seasonText(seasonKey(now)), { season: seasonKey(now), status: 'ongoing', order: 'popularity' }, call); });
@@ -334,13 +390,11 @@
       var p = parseQuery(params.url);
       var page = parseInt(params.page, 10) || 1;
 
-      gql('{ animes(' + animesArgs(p, page) + ') { ' + ANIME_FIELDS + ' } }', function (data) {
-        var list = (data.animes || []).map(shikiCard);
-
+      pageOf(p, page, function (list, more) {
         if (!list.length && page === 1) return onerror();
 
-        oncomplite({ results: list, page: page, total_pages: list.length >= PAGE ? page + 1 : page });
-      }, function () { onerror(); }, { auth: !!p.mylist });
+        oncomplite({ results: list, page: page, total_pages: more ? page + 1 : page });
+      }, function () { onerror(); });
     },
     // Карточка Shikimori → карточка TMDB. Объект активности меняем на месте, чтобы «Назад»
     // и восстановление после перезапуска открывали уже карточку TMDB
@@ -939,7 +993,7 @@
         if (a.key === 'season') pick('Сезон', seasonChoices(), 'season', function () { p.status = ''; });
         else if (a.key === 'kind') pick('Тип', [{ title: 'Любой', value: '' }].concat(Object.keys(KIND_NAMES).map(function (k) { return { title: KIND_NAMES[k], value: k }; })), 'kind');
         else if (a.key === 'status') pick('Статус', [{ title: 'Любой', value: '' }].concat(Object.keys(STATE_NAMES).map(function (k) { return { title: STATE_NAMES[k], value: k }; })), 'status');
-        else if (a.key === 'order') pick('Сортировка', Object.keys(ORDER_NAMES).map(function (k) { return { title: ORDER_NAMES[k], value: k }; }), 'order');
+        else if (a.key === 'order') pick('Сортировка', Object.keys(ORDER_NAMES).filter(function (k) { return k !== 'added' || p.mylist; }).map(function (k) { return { title: ORDER_NAMES[k], value: k }; }), 'order');
         else if (a.key === 'genre') {
           loadGenres(function (list) {
             pick('Жанр', [{ title: 'Любой', value: '' }].concat(list.map(function (g) { return { title: g.russian, value: String(g.id) }; })), 'genre', function (it) {
@@ -1660,6 +1714,8 @@
   // Своё изменение (статус из меню, досмотренные серии) — сразу в список на устройстве
   function rateLocal(id, status, episodes, total) {
     if (!loggedIn()) return;
+
+    added_cache = {};
 
     var data = ratesData();
 
