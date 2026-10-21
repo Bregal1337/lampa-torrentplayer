@@ -55,6 +55,10 @@ def show(name, s):
     out = name + ': ' + ' | '.join(parts) + ('  (' + s['how'] + ')' if s.get('how') else '')
     for f in s.get('files') or []:
         out += '\n    файлы: ' + f
+    if s.get('real'):
+        out += '\n    настоящие файлы: %d раздач, расходится %d' % (s['real']['checked'], len(s['real']['bad']))
+        for b in s['real']['bad'][:12]:
+            out += '\n      ' + b
     return out
 
 
@@ -78,6 +82,10 @@ def main():
                 for x in got[name].get('seasons', []):
                     for t in x.get('dropped') or []:
                         print('    %d сезон %s, отсеяна: %s' % (x['n'], x.get('years'), t[:150]))
+                    for t in x.get('foreign') or []:
+                        print('    %d сезон, без названия сериала: %s' % (x['n'], t[:140]))
+                    for t in x.get('unnamed') or []:
+                        print('    %d сезон, без сезона в названии: %s' % (x['n'], t[:140]))
                     for t in x.get('outside') or []:
                         print('    %d сезон, вне сезона: %s' % (x['n'], t[:150]))
         return

@@ -13,5 +13,9 @@
   {"title": "Jujutsu_Kaisen", "release": "Магическая битва (ТВ-2) / Jujutsu Kaisen / Sorcery Fight / JJK 2nd Season [TV] [23 из 23] [RUS(int)", "file": "Jujutsu Kaisen - {n:02}.mkv", "n": [25, 47], "expect": [2, 1]},
   {"title": "Jujutsu_Kaisen", "release": "Магическая битва 2 сезон (1-23 из 23)", "file": "Jujutsu Kaisen S2 - {n:02}.mkv", "n": [1, 23], "expect": [2, 1]},
   {"title": "One_Piece", "release": "Ван-Пис / One Piece [1061-1118] (1999-2024) WEBRip-AVC | Persona99", "file": "One Piece - {n:04}.mkv", "n": [1061, 1063], "expect": [21, 170]},
-  {"title": "Death_Note", "release": "", "file": "Death Note - {n:02}.mkv", "n": [1, 37], "expect": [1, 1]}
+  {"title": "Death_Note", "release": "", "file": "Death Note - {n:02}.mkv", "n": [1, 37], "expect": [1, 1]},
+  {"title": "Bleach", "release": "(2 сезон: Части 1-4: 1-48 серии из 50)", "file": "Bleach.Thousand-Year.Blood.War.S01E{n:02}.1080p.DSNP.WEB-DL.mkv", "n": [1, 48], "expect": [2, 1]},
+  {"title": "Cyberpunk_Edgerunners", "release": "Киберпанк: Бегущие по краю 2 сезон / Cyberpunk: Edgerunners 2026 [1080p]", "file": "Cyberpunk.Edgerunners.S01E{n:02}.1080p.mkv", "n": [1, 10], "expect": [1, 1]},
+  {"title": "Cyberpunk_Edgerunners", "release": "(2 сезон: 1-10 серии из 10) / Cyberpunk: Edgerunners / 2026 / СТ / WEB-DL (1080p)", "file": "Cyberpunk.Edgerunners.S01E{n:02}.1080p.mkv", "n": [1, 10], "expect": [2, 1]},
+  {"title": "Cyberpunk_Edgerunners", "release": "(2 сезон: 1-10 серии из 10) / Cyberpunk: Edgerunners / 2026 / СТ / WEB-DL (1080p)", "file": "Cyberpunk Edgerunners - {n:02} [1080p].mkv", "n": [1, 10], "expect": [2, 1]}
 ]

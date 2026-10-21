@@ -7,7 +7,7 @@
   if (window.tvt_plugin_ready) return;
   window.tvt_plugin_ready = true;
 
-  var VERSION = '1.14.0';
+  var VERSION = '1.15.0';
 
   // ---------------------------------------------------------------------------
   // Разбор названия раздачи
@@ -779,11 +779,14 @@
     }, function () { err('нет ответа'); });
   }
 
+  // Ещё названия сериала, кроме карточки TMDB: названия его тайтлов на Shikimori (ромадзи, английское, русское)
+  var title_names = {};
+
   function sameTitle(title, movie) {
     var norm = function (s) { return (s || '').toLowerCase().replace(/ё/g, 'е').replace(/[^a-zа-я0-9]+/g, ' ').trim(); };
     var t = ' ' + norm(title) + ' ';
 
-    return [movie.title, movie.name, movie.original_title, movie.original_name].some(function (n) {
+    return [movie.title, movie.name, movie.original_title, movie.original_name].concat(title_names[movie.id] || []).some(function (n) {
       n = norm(n);
 
       return n && t.indexOf(' ' + n + ' ') >= 0;
@@ -1789,6 +1792,12 @@
 
     if (!list.length) list = items.slice();
 
+    // Парсер присылает и чужое («Десять (1 сезон: 1-10 серии из 10)», «Три процента» к «Гинтаме») —
+    // в сезоне только раздачи, где есть название сериала
+    var named = list.filter(function (it) { return sameTitle(it.el.Title, movie); });
+
+    if (named.length) list = named;
+
     // Раздачи с годами вне лет выхода — другое произведение с тем же названием
     // (фильм «Тетрадь смерти» 2017 года у сериала 2006–2007)
     // Конец — по последнему сезону и следующей серии: TMDB обновляет last_air_date с опозданием
@@ -1825,6 +1834,28 @@
     // Сезон в названии не указан: у односезонного сериала это тот же сезон — берём вместе с «[S01]»
     // («Тетрадь смерти»: одна раздача с S01 и полсотни «1-37 из 37»), у многосезонного — запасной вариант
     var out = realSeasons(movie).length <= 1 ? exact.concat(unnamed) : exact.length ? exact : unnamed;
+
+    // Аниме: раздача без сезона, но со сквозными номерами серий целиком внутри этого сезона и в его годы
+    // («Блич / Bleach / 2004 / [BDRip 1080p][HEVC][1-189]») — тоже раздача сезона
+    if (out === exact && years) {
+      var before = 0;
+      var season = null;
+
+      realSeasons(movie).some(function (s) {
+        if (s.season_number === n) return (season = s);
+        before += s.episode_count;
+      });
+
+      if (season) {
+        out = exact.concat(unnamed.filter(function (it) {
+          var g = it.r.ep_range;
+
+          // OVA, спешлы и фильмы под названием сериала («Атака титанов OVA 1-3 (1-8 серии из 8)») — не серии сезона
+          return g && g[0] > before && g[1] <= before + season.episode_count && !it.r.parts && !/\b(?:ova|ona|oad|special|movie)s?\b|спешл|спэшл|фильм/i.test(it.el.Title || '') &&
+            (!it.r.years.length || it.r.years.some(function (y) { return y[1] >= years[0] - 1 && y[0] <= years[1] + 1; }));
+        }));
+      }
+    }
 
     // Серии раздачи все вне сезона («Ван-Пис [1061-1118]» для 3 сезона) — не предлагаем
     var inside = out.filter(function (it) {
@@ -2139,7 +2170,8 @@
 
   // → список сезонов (как у splitSeasons, у сезонов из нескольких частей ещё parts),
   // 'tmdb' — сезоны как на TMDB, null — тайтлы Shikimori с сериями TMDB не сходятся
-  function unitSeasons(movie, data, units) {
+  // votes — сезоны по названиям раздач (releaseSeasons): по ним видно, считают ли трекеры тайтлы сезонами
+  function unitSeasons(movie, data, units, votes) {
     var tmdb = tmdbSeasons(movie);
     var flat = [];
 
@@ -2160,6 +2192,25 @@
     var extra = (units || []).filter(function (u) { return u.extra && fresh(u); });
 
     if (!base.length || !flat.length) return null;
+
+    // Тайтл франшизы, которого нет в карте, но который выходил между тайтлами из карты и не одновременно
+    // с ними («Гинтама»: Porori-hen и Shirogane no Tamashii-hen), — тоже часть сериала. Шедшие параллельно
+    // («Naruto SD» во время «Ураганных хроник») — отдельные сериалы
+    var period = function (u) { var a = dayTime(u.aired); var b = dayTime(u.released) || (u.status === 'released' ? a : now); return [a, Math.max(a, b)]; };
+    var between = extra.filter(function (x) {
+      var px = period(x);
+
+      return px[0] > dayTime(base[0].aired) && px[0] < dayTime(base[base.length - 1].aired) && !base.some(function (u) {
+        var pu = period(u);
+
+        return px[0] <= pu[1] + 3 * DAY && pu[0] <= px[1] + 3 * DAY;
+      });
+    });
+
+    if (between.length) {
+      base = base.concat(between).sort(function (a, b) { return a.aired < b.aired ? -1 : 1; });
+      extra = extra.filter(function (x) { return between.indexOf(x) < 0; });
+    }
 
     // Первая серия тайтла: первая ещё не разложенная серия TMDB, вышедшая не раньше тайтла (±3 дня)
     var startOf = function (u, from) {
@@ -2183,6 +2234,13 @@
         var s = startOf(u, p);
 
         if (s >= flat.length) break;
+
+        // Ближайшая серия TMDB вышла уже после конца тайтла — у сериала на TMDB его серий нет (спин-офф или
+        // пародия того же времени: «Атака! Титаны средней школы» между 1 и 2 сезоном «Атаки титанов») — пропускаем
+        var at0 = airTime(flat[s].ep);
+        var until = dayTime(u.released) ? dayTime(u.released) + 14 * DAY : u.status === 'released' ? dayTime(u.aired) + 120 * DAY : now + DAY;
+
+        if (at0 && at0 > until) continue;
 
         // Серии до начала тайтла (спешлы, пересказы) — предыдущему тайтлу
         if (s > p) {
@@ -2229,10 +2287,16 @@
 
     if (p < flat.length && spans.length) spans[spans.length - 1].to = flat.length - 1;
 
-    // Тайтл на несколько сезонов TMDB («Ван-Пис»: один тайтл, 23 сезона TMDB по аркам) — сезоны TMDB
+    // Тайтл на несколько сезонов TMDB. «Гинтама»: TMDB режет её по годам, а трекеры считают сезонами тайтлы
+    // («ТВ-1» — 201 серия, это 1–4-й сезоны TMDB; «ТВ-2» — Gintama') — сезоны по тайтлам, если тайтлов
+    // несколько и раздачи сами называют сезоны. «Ван-Пис», «Наруто»: один тайтл, у раздач сквозные номера — сезоны TMDB
     var tmdbOf = function (i) { return flat[i].t.season_number; };
+    var spanning = spans.some(function (sp) { return tmdbOf(sp.from) !== tmdbOf(sp.to); });
+    var voted = 0;
 
-    if (spans.some(function (sp) { return tmdbOf(sp.from) !== tmdbOf(sp.to); })) return 'tmdb';
+    for (var vs in votes || {}) if ((votes[vs].seen >= 2 || votes[vs].count) && +vs > voted && +vs <= 40) voted = +vs;
+
+    if (spanning && (spans.length < 2 || voted < 2)) return 'tmdb';
 
     // Номера сезонов: из карты, если они идут подряд с 1 и не склеивают сезоны TMDB, иначе — по порядку,
     // а тайтл того же сезона TMDB с названием части («… - Ketsubetsu-tan», «… Part 2») — часть сезона
@@ -2286,6 +2350,7 @@
         for (var key in ep) c[key] = ep[key];
 
         c.tmdb_episode = ep.episode_number;
+        c.tmdb_season = flat[i].t.season_number;
         c.abs = i + 1;
         c.episode_number = cur.episodes.length + 1;
         c.season_number = sp.season;
@@ -2395,9 +2460,27 @@
 
   // Сезоны сериала: по Shikimori (units) или, без них, по названиям раздач. data — серии всех сезонов TMDB.
   // → { list — сезоны для season_splits или null (как на TMDB), how — как получились (для консоли) }
+  // Сезонов TMDB много — серии всех грузить дорого; стоит, только если тайтлов Shikimori несколько
+  // («Гинтама»: 11 сезонов TMDB, 8 тайтлов), а не один на весь сериал («Ван-Пис»: 23 сезона, один тайтл)
+  function unitsUsable(units, tmdb) {
+    return !!units && units.length > 0 && (tmdb.length <= 8 || (tmdb.length <= 16 && units.filter(function (u) { return !u.extra; }).length >= 2));
+  }
+
+  function unitNames(movie, units) {
+    var names = [];
+
+    (units || []).forEach(function (u) {
+      [u.name, u.russian, u.english].forEach(function (x) { if (x && names.indexOf(x) < 0) names.push(x); });
+    });
+
+    title_names[movie.id] = names;
+  }
+
   function buildSeasons(movie, items, data, units) {
-    if (units && units.length && tmdbSeasons(movie).length <= 8) {
-      var list = unitSeasons(movie, data, units);
+    if (units) unitNames(movie, units);
+
+    if (unitsUsable(units, tmdbSeasons(movie))) {
+      var list = unitSeasons(movie, data, units, releaseSeasons(items));
 
       if (list === 'tmdb') return { list: null, how: 'Shikimori: как на TMDB' };
       if (list) return { list: list, how: 'Shikimori' };
@@ -2416,7 +2499,7 @@
       for (var j = 0; j < p.episodes.length; j++) {
         var ep = p.episodes[j];
 
-        if (tmdb_season ? p.tmdb_season === tmdb_season && ep.tmdb_episode === e : ep.abs === e) {
+        if (tmdb_season ? (ep.tmdb_season || p.tmdb_season) === tmdb_season && ep.tmdb_episode === e : ep.abs === e) {
           return { season: p.season_number, episode: ep.episode_number };
         }
       }
@@ -2524,11 +2607,38 @@
     return { season: s.season_number, offset: a.from - 1 };
   }
 
+  // Раздача одного сезона («2 сезон: Части 1-4: 1-48 серии из 50»), а в именах всех файлов — другой сезон
+  // («Bleach.Thousand-Year.Blood.War.S01E48»: стриминг считает «Тысячелетнюю войну» отдельным сериалом).
+  // Номера файлов сходятся с тем, что написано в названии раздачи, — верим названию. Без серий в названии
+  // верим файлам: раздача «[S02]» с файлами S01E01–10 бывает просто 1 сезоном. files — [{ s, e }]
+  function seasonOverride(movie, r, files) {
+    if (r.seasons.length !== 1 || !files.length) return 0;
+
+    var n = r.seasons[0];
+    var season = seasonOf(movie, n);
+    var s0 = files[0].s;
+
+    if (!season || !s0 || s0 === n || files.some(function (f) { return f.s !== s0; })) return 0;
+
+    var nums = files.map(function (f) { return f.e; }).filter(Boolean);
+
+    if (!nums.length) return 0;
+
+    var min = Math.min.apply(null, nums);
+    var max = Math.max.apply(null, nums);
+    var range = r.ep_range;
+    var fits = range ? min === range[0] && max === range[1] : r.total ? max === r.total : false;
+
+    return fits && max <= season.episode_count ? n : 0;
+  }
+
   // Какой серии экрана соответствует файл раздачи. ls/le — что разобрала Lampa по имени файла,
-  // ctx — сдвиг для раздачи части (partOffset)
+  // ctx — что известно о раздаче целиком: part — сдвиг для раздачи части (partOffset), season — сезон из
+  // названия раздачи вместо сезона в именах файлов (seasonOverride)
   function fileTarget(movie, r, path, ls, le, ctx) {
     if (!le) return null;
-    if (ctx && ctx.offset) return { season: ctx.season, episode: le + ctx.offset };
+    if (ctx && ctx.part) return { season: ctx.part.season, episode: le + ctx.part.offset };
+    if (ctx && ctx.season) return { season: ctx.season, episode: le };
 
     var split = season_splits[movie.id];
     var to = split ? splitFile(split, r, path, ls, le) : releaseSeasonFile(movie, r, path, ls, le);
@@ -2609,9 +2719,13 @@
       var movie = e.params && e.params.movie;
 
       if (e.type === 'list_open') {
-        var nums = (e.items || []).filter(function (f) { return VIDEO.test(f.path || ''); }).map(function (f) { return fileEpisodeNo(f.path); }).filter(Boolean);
+        var videos = (e.items || []).filter(function (f) { return VIDEO.test(f.path || ''); });
+        var nums = videos.map(function (f) { return fileEpisodeNo(f.path); }).filter(Boolean);
 
-        if (torrent_ctx && movie && torrent_ctx.movie_id === movie.id) torrent_ctx.part = partOffset(movie, torrent_ctx.r, nums);
+        if (torrent_ctx && movie && torrent_ctx.movie_id === movie.id) {
+          torrent_ctx.part = partOffset(movie, torrent_ctx.r, nums);
+          torrent_ctx.season = torrent_ctx.part ? 0 : seasonOverride(movie, torrent_ctx.r, videos.map(function (f) { return { s: pathSeason(f.path), e: fileEpisodeNo(f.path) }; }));
+        }
 
         return;
       }
@@ -2626,8 +2740,9 @@
       var ctx = torrent_ctx && torrent_ctx.movie_id === movie.id ? torrent_ctx : null;
       var r = ctx ? ctx.r : { seasons: [] };
       var ls = parseInt(el.season, 10) || 0;
-      var le = parseInt(el.episode, 10) || 0;
-      var to = fileTarget(movie, r, el.path, ls, le, ctx && ctx.part);
+      // Lampa номера не нашла («[AniDub]_BLEACH_300_[1280x720_x264]») — берём свой разбор имени файла
+      var le = parseInt(el.episode, 10) || fileEpisodeNo(el.path);
+      var to = fileTarget(movie, r, el.path, ls, le, ctx) || (le && !parseInt(el.episode, 10) ? { season: ls || 1, episode: le } : null);
 
       if (!to) return;
 
@@ -2699,12 +2814,17 @@
 
     n = n.replace(/\[[0-9a-f]{8}\]/g, ' ')
       .replace(/(?:19|20)\d{2}(?!\d)/g, ' ')
-      .replace(/\b\d{3,4}[pi]\b|\b[xh]\.?26[45]\b|\b10\s?-?bit\b|\b(?:aac|ac3|eac3|flac|dts|opus)\s?\d?(?:\.\d)?\b|\b\d\.\d\b|\bv\d\b/g, ' ');
+      .replace(/\b\d{3,4}x\d{3,4}\b|\b\d{3,4}[pi]\b|\b[xh]\.?26[45]\b|\b10\s?-?bit\b|\b(?:aac|ac3|eac3|flac|dts|opus)\s?\d?(?:\.\d)?\b|\b\d\.\d\b|\bv\d\b/g, ' ');
 
     var m = n.match(/s\d{1,2}\s*e(\d{1,4})/) || n.match(/\be(?:p|pisode)?\s*\.?\s*(\d{1,4})\b/) || n.match(/(\d{1,4})\s*(?:серия|эпизод|話)/) ||
       n.match(/第\s*(\d{1,4})/) || n.match(/\s[-–]\s*(\d{1,4})(?!\d)/) || n.match(/\[(\d{1,4})\]/);
 
     if (m) return +m[1];
+
+    // Отдельно стоящее число («(SB-RAW)Bleach 01 (R2DVD …)»), а не цифра внутри слова (R2DVD)
+    var alone = n.match(/(?:^|[\s\[\](){}._-])\d{1,4}(?=$|[\s\[\](){}._-])/g);
+
+    if (alone) return +alone[alone.length - 1].replace(/\D/g, '');
 
     var all = n.match(/\d{1,4}/g);
 
@@ -3183,7 +3303,10 @@
   var autoplay = null;
 
   function finishAutoplay() {
-    if (autoplay) clearTimeout(autoplay.timer);
+    if (autoplay) {
+      clearTimeout(autoplay.timer);
+      clearTimeout(autoplay.wait);
+    }
 
     autoplay = null;
     $('body').removeClass('tvt-autopick');
@@ -3208,11 +3331,26 @@
     keep.forEach(function (f) { items.push(f); });
   }
 
-  // missing — что делать, если нужной серии в раздаче не оказалось (экран сериала пробует другую раздачу)
-  function startAutoplay(el, movie, target, done, missing) {
+  // missing — что делать, если нужной серии в раздаче не оказалось (экран сериала пробует другую раздачу).
+  // limit — сколько ждать список файлов: другую раздачу плагин открывает сам, и если у неё нет сидов, Lampa
+  // крутила бы загрузку полторы минуты; такую закрываем раньше
+  function startAutoplay(el, movie, target, done, missing, limit) {
     finishAutoplay();
 
-    autoplay = { target: target, movie: movie, files: [], picked: false, started: false, done: done, missing: missing, time: Date.now() };
+    var ap = autoplay = { el: el, target: target, movie: movie, files: [], picked: false, started: false, done: done, missing: missing, time: Date.now() };
+
+    if (limit) {
+      ap.wait = setTimeout(function () {
+        if (autoplay !== ap || ap.opened) return;
+
+        finishAutoplay();
+
+        // Окно загрузки Lampa закрывается своим «Назад» — оно же отменяет торрент в TorrServer
+        if (Lampa.Controller.enabled().name === 'modal') Lampa.Controller.back();
+
+        Lampa.Noty.show('Раздача не отвечает — выберите другую в «Все раздачи»');
+      }, limit);
+    }
 
     el.poster = movie.img;
     // TorrServer подписывает торрент по title, у результатов парсера есть только Title
@@ -3221,6 +3359,23 @@
     if (Lampa.Torrent.opened) Lampa.Torrent.opened(function () { markViewed(el); });
 
     Lampa.Torrent.start(el, movie);
+  }
+
+  // Раздачи, в которых при открытии не нашлось ни одного файла нужного сезона («Гинтама (ТВ-7) [14 из 14]»
+  // с сериями 354–367 — это 8 сезон по счёту экрана): в этом сезоне их больше не предлагаем.
+  // Пометки — своей версии плагина: после обновления раскладка файлов могла стать другой
+  function badKey(el, movie, season) {
+    return VERSION + ':' + (movie && movie.id) + ':' + season + ':' + (btih(el) || el.Title || '');
+  }
+
+  function markBadRelease(el, movie, season) {
+    var all = readJson('tvt_bad');
+    var keys = Object.keys(all).filter(function (k) { return k.indexOf(VERSION + ':') === 0; });
+    var keep = {};
+
+    keys.slice(-299).forEach(function (k) { keep[k] = all[k]; });
+    keep[badKey(el, movie, season)] = Date.now();
+    Lampa.Storage.set('tvt_bad', keep);
   }
 
   function autoPick() {
@@ -3247,6 +3402,8 @@
       onlineSubs(ap, found.element, function () { found.item.trigger('hover:enter'); });
     } else {
       var missing = !t.movie && ap.missing;
+
+      if (!t.movie && ap.el && ap.files.length && !ap.files.some(function (f) { return f.element.season == t.season; })) markBadRelease(ap.el, ap.movie, t.season);
 
       finishAutoplay();
 
@@ -3428,6 +3585,8 @@
 
       if (e.type === 'list_open') {
         autoplay.files = [];
+        autoplay.opened = true;
+        clearTimeout(autoplay.wait);
         $('body').addClass('tvt-autopick');
 
         if (autoplay.target.movie && Array.isArray(e.items)) keepMainFiles(e.items);
@@ -3601,7 +3760,13 @@
     // --- раздачи для текущего сезона, озвучки, качества ---
 
     function releasesFor(n) {
-      return serial ? seasonReleases(movie, items, n) : movieReleases(items, movie_year);
+      if (!serial) return movieReleases(items, movie_year);
+
+      var list = seasonReleases(movie, items, n);
+      var bad = readJson('tvt_bad');
+      var good = list.filter(function (it) { return !bad[badKey(it.el, movie, n)]; });
+
+      return good.length ? good : list;
     }
 
     function matchVoice(key) {
@@ -4280,7 +4445,12 @@
         });
         var same_voice = alt.filter(matchVoice(pick.voice));
 
-        alt = (same_voice.length ? same_voice : alt).sort(function (a, b) { return scoreRelease(b, true) - scoreRelease(a, true); });
+        alt = same_voice.length ? same_voice : alt;
+
+        // Раздача без сидов у TorrServer грузится до полутора минут и заканчивается ошибкой — такие только в крайнем случае
+        var seeded = alt.filter(function (x) { return (parseInt(x.el.Seeders, 10) || 0) > 0; });
+
+        alt = (seeded.length ? seeded : alt).sort(function (a, b) { return scoreRelease(b, true) - scoreRelease(a, true); });
 
         if (!alt.length || tried.length >= 3) {
           return Lampa.Noty.show('Серии ' + target.episode + ' нет в ' + (tried.length > 1 ? tried.length + ' раздачах' : 'этой раздаче') + ' — выберите раздачу в «Все раздачи»');
@@ -4288,7 +4458,7 @@
 
         Lampa.Noty.show('Серии ' + target.episode + ' нет в этой раздаче — открываю другую');
         launch(alt[0], target, tried);
-      } : null);
+      } : null, tried.length > 1 ? 30000 : 0);
     }
 
     // Прогресс изменился (плеер вернул позицию) — обновляем отметки на месте, не трогая фокус
@@ -4510,6 +4680,8 @@
 
       withUnits(function (units) {
         var tmdb = tmdbSeasons(movie);
+
+        if (units) unitNames(movie, units);
         var plan = units ? null : planSplit(movie, items);
 
         // Разбор сезонов — в консоль Lampa (меню → Консоль), чтобы было видно, почему сезон разрезан или нет
@@ -4521,7 +4693,7 @@
 
         // Серии всех сезонов нужны, только если есть что раскладывать: несколько тайтлов Shikimori
         // (или тайтл не совпадает с сезоном TMDB) либо план по раздачам
-        var need = units ? tmdb.length <= 8 && !unitsMatchTmdb(units, tmdb) : !!plan;
+        var need = units ? unitsUsable(units, tmdb) && !unitsMatchTmdb(units, tmdb) : !!plan;
 
         if (!need) {
           if (isAnimation(movie)) log(units ? 'как на TMDB' : 'без изменений');
@@ -5972,7 +6144,8 @@
     testSeasons: testSeasons,
     coversEpisode: coversEpisode,
     seasonYears: seasonYears,
-    files: { target: fileTarget, partOffset: partOffset, pathSeason: pathSeason, episodeNo: fileEpisodeNo, span: releaseSpan },
+    sameTitle: sameTitle,
+    files: { target: fileTarget, partOffset: partOffset, seasonOverride: seasonOverride, pathSeason: pathSeason, episodeNo: fileEpisodeNo, span: releaseSpan },
     sync: function () { runSync(true); },
     // Для anime.js: свои файлы в репозитории синхронизации и открытие сериала на нужном сезоне
     store: { ready: function () { return !!syncConfig(); }, get: storeGet, put: storePut, info: storeInfo },

@@ -5,7 +5,7 @@
    {
     "episodes": 24,
     "n": 1,
-    "releases": 28
+    "releases": 33
    },
    {
     "episodes": 24,
@@ -31,24 +31,24 @@
    {
     "episodes": 25,
     "n": 1,
-    "releases": 33
+    "releases": 32
    },
    {
     "episodes": 12,
     "n": 2,
-    "releases": 49
+    "releases": 32
    },
    {
     "episodes": 22,
     "n": 3,
     "parts": "12+10",
-    "releases": 42
+    "releases": 38
    },
    {
     "episodes": 28,
     "n": 4,
     "parts": "16+12",
-    "releases": 54
+    "releases": 46
    }
   ]
  },
@@ -58,12 +58,12 @@
    {
     "episodes": 170,
     "n": 1,
-    "releases": 1
+    "releases": 24
    },
    {
     "episodes": 26,
     "n": 2,
-    "releases": 7
+    "releases": 4
    }
   ]
  },
@@ -73,14 +73,19 @@
    "ok",
    "ok",
    "ok",
+   "ok",
    "ok"
   ],
   "how": "Shikimori",
+  "real": {
+   "bad": [],
+   "checked": 28
+  },
   "seasons": [
    {
     "episodes": 366,
     "n": 1,
-    "releases": 12
+    "releases": 80
    },
    {
     "episodes": 50,
@@ -147,6 +152,11 @@
   ]
  },
  "Cyberpunk_Edgerunners": {
+  "files": [
+   "ok",
+   "ok",
+   "ok"
+  ],
   "how": "без изменений",
   "seasons": [
    {
@@ -157,7 +167,7 @@
    {
     "episodes": 10,
     "n": 2,
-    "releases": 9
+    "releases": 6
    }
   ]
  },
@@ -167,7 +177,7 @@
    {
     "episodes": 12,
     "n": 1,
-    "releases": 37
+    "releases": 39
    },
    {
     "episodes": 12,
@@ -196,22 +206,23 @@
    {
     "episodes": 26,
     "n": 1,
-    "releases": 8
+    "releases": 7
    },
    {
     "episodes": 7,
     "n": 2,
-    "releases": 16
+    "releases": 15
    },
    {
     "episodes": 11,
     "n": 3,
-    "releases": 18
+    "releases": 17
    },
    {
     "episodes": 11,
+    "missing": "9-11",
     "n": 4,
-    "releases": 10
+    "releases": 7
    },
    {
     "episodes": 8,
@@ -229,7 +240,7 @@
    {
     "episodes": 24,
     "n": 1,
-    "releases": 17
+    "releases": 23
    },
    {
     "episodes": 11,
@@ -256,7 +267,7 @@
    {
     "episodes": 28,
     "n": 1,
-    "releases": 13
+    "releases": 15
    },
    {
     "episodes": 10,
@@ -277,62 +288,60 @@
   ]
  },
  "Gintama": {
-  "how": "без изменений",
+  "how": "Shikimori",
+  "real": {
+   "bad": [
+    "7 сезон, 0 из 12: Гинтама (ТВ-7) / Gintama. [TV] [14 из 14] [JAP+Sub] [2018, комедия, пародия, сенэн, WEBRip | [HorribleSubs] Gintama - 354 [1080p].mkv"
+   ],
+   "checked": 23
+  },
   "seasons": [
    {
-    "episodes": 49,
+    "episodes": 201,
     "n": 1,
-    "releases": 3
-   },
-   {
-    "episodes": 50,
-    "n": 2,
-    "releases": 7
-   },
-   {
-    "episodes": 51,
-    "n": 3,
-    "releases": 1
-   },
-   {
-    "episodes": 51,
-    "n": 4,
-    "releases": 1
-   },
-   {
-    "episodes": 51,
-    "n": 5,
-    "releases": 1
-   },
-   {
-    "episodes": 13,
-    "n": 6,
     "releases": 4
    },
    {
     "episodes": 51,
-    "n": 7,
-    "releases": 5
-   },
-   {
-    "episodes": 12,
-    "n": 8,
-    "releases": 5
+    "n": 2,
+    "releases": 8,
+    "tmdb": 5
    },
    {
     "episodes": 13,
-    "n": 9,
-    "releases": 31
+    "n": 3,
+    "releases": 8,
+    "tmdb": 6
+   },
+   {
+    "episodes": 51,
+    "n": 4,
+    "releases": 6,
+    "tmdb": 7
    },
    {
     "episodes": 12,
-    "n": 10,
-    "releases": 31
+    "n": 5,
+    "releases": 6,
+    "tmdb": 8
+   },
+   {
+    "episodes": 13,
+    "n": 6,
+    "releases": 5,
+    "tmdb": 9
+   },
+   {
+    "episodes": 12,
+    "n": 7,
+    "releases": 6,
+    "tmdb": 10
    },
    {
     "episodes": 14,
-    "n": 11,
-    "releases": 31
+    "n": 8,
+    "releases": 6,
+    "tmdb": 11
    }
   ]
  },
@@ -342,23 +351,23 @@
    {
     "episodes": 25,
     "n": 1,
-    "releases": 15
+    "releases": 9
    },
    {
     "episodes": 25,
     "n": 2,
-    "releases": 19
+    "releases": 11
    },
    {
     "episodes": 10,
     "n": 3,
-    "releases": 10
+    "releases": 5
    },
    {
     "episodes": 25,
     "n": 4,
     "parts": "13+12",
-    "releases": 13
+    "releases": 2
    }
   ]
  },
@@ -392,7 +401,7 @@
    {
     "episodes": 24,
     "n": 1,
-    "releases": 21
+    "releases": 22
    },
    {
     "episodes": 23,
@@ -430,7 +439,7 @@
    {
     "episodes": 12,
     "n": 1,
-    "releases": 14
+    "releases": 15
    },
    {
     "episodes": 13,
@@ -455,18 +464,18 @@
     "episodes": 23,
     "n": 1,
     "parts": "11+12",
-    "releases": 12
+    "releases": 11
    },
    {
     "episodes": 24,
     "n": 2,
     "parts": "12+12",
-    "releases": 55
+    "releases": 51
    },
    {
     "episodes": 14,
     "n": 3,
-    "releases": 30
+    "releases": 29
    }
   ]
  },
@@ -521,102 +530,102 @@
    {
     "episodes": 32,
     "n": 1,
-    "releases": 3
+    "releases": 1
    },
    {
     "episodes": 21,
     "n": 2,
-    "releases": 7
+    "releases": 5
    },
    {
     "episodes": 18,
     "n": 3,
-    "releases": 2
+    "releases": 20
    },
    {
     "episodes": 17,
     "n": 4,
-    "releases": 2
+    "releases": 20
    },
    {
     "episodes": 24,
     "n": 5,
-    "releases": 2
+    "releases": 20
    },
    {
     "episodes": 31,
     "n": 6,
-    "releases": 2
+    "releases": 20
    },
    {
     "episodes": 8,
     "n": 7,
-    "releases": 2
+    "releases": 20
    },
    {
     "episodes": 24,
     "n": 8,
-    "releases": 2
+    "releases": 20
    },
    {
     "episodes": 21,
     "n": 9,
-    "releases": 1
+    "releases": 20
    },
    {
     "episodes": 25,
     "n": 10,
-    "releases": 1
+    "releases": 20
    },
    {
     "episodes": 21,
     "n": 11,
-    "releases": 23
+    "releases": 19
    },
    {
     "episodes": 33,
     "n": 12,
-    "releases": 23
+    "releases": 19
    },
    {
     "episodes": 20,
     "n": 13,
-    "releases": 24
+    "releases": 20
    },
    {
     "episodes": 25,
     "n": 14,
-    "releases": 25
+    "releases": 21
    },
    {
     "episodes": 28,
     "n": 15,
-    "releases": 24
+    "releases": 20
    },
    {
     "episodes": 13,
     "n": 16,
-    "releases": 23
+    "releases": 20
    },
    {
     "episodes": 11,
     "n": 17,
-    "releases": 24
+    "releases": 21
    },
    {
     "episodes": 21,
     "n": 18,
-    "releases": 25
+    "releases": 21
    },
    {
     "episodes": 20,
     "n": 19,
-    "releases": 24
+    "releases": 20
    },
    {
     "episodes": 87,
     "n": 20,
-    "releases": 24
+    "releases": 20
    }
   ]
  },
@@ -629,7 +638,7 @@
    {
     "episodes": 61,
     "n": 1,
-    "releases": 50
+    "releases": 91
    },
    {
     "episodes": 16,
@@ -639,107 +648,107 @@
    {
     "episodes": 14,
     "n": 3,
-    "releases": 640
+    "releases": 635
    },
    {
     "episodes": 39,
     "n": 4,
-    "releases": 648
+    "releases": 643
    },
    {
     "episodes": 13,
     "n": 5,
-    "releases": 640
+    "releases": 635
    },
    {
     "episodes": 52,
     "n": 6,
-    "releases": 646
+    "releases": 641
    },
    {
     "episodes": 33,
     "n": 7,
-    "releases": 647
+    "releases": 642
    },
    {
     "episodes": 35,
     "n": 8,
-    "releases": 645
+    "releases": 640
    },
    {
     "episodes": 73,
     "n": 9,
-    "releases": 649
+    "releases": 644
    },
    {
     "episodes": 45,
     "n": 10,
-    "releases": 647
+    "releases": 642
    },
    {
     "episodes": 26,
     "n": 11,
-    "releases": 647
+    "releases": 642
    },
    {
     "episodes": 14,
     "n": 12,
-    "releases": 639
+    "releases": 634
    },
    {
     "episodes": 101,
     "n": 13,
-    "releases": 647
+    "releases": 642
    },
    {
     "episodes": 58,
     "n": 14,
-    "releases": 645
+    "releases": 640
    },
    {
     "episodes": 62,
     "n": 15,
-    "releases": 648
+    "releases": 643
    },
    {
     "episodes": 50,
     "n": 16,
-    "releases": 647
+    "releases": 642
    },
    {
     "episodes": 56,
     "n": 17,
-    "releases": 647
+    "releases": 642
    },
    {
     "episodes": 55,
     "n": 18,
-    "releases": 647
+    "releases": 642
    },
    {
     "episodes": 74,
     "n": 19,
-    "releases": 650
+    "releases": 645
    },
    {
     "episodes": 14,
     "n": 20,
-    "releases": 644
+    "releases": 639
    },
    {
     "episodes": 197,
     "n": 21,
-    "releases": 665
+    "releases": 660
    },
    {
     "episodes": 67,
     "n": 22,
-    "releases": 651
+    "releases": 646
    },
    {
     "episodes": 25,
     "n": 23,
-    "releases": 641
+    "releases": 636
    }
   ]
  },
@@ -749,17 +758,17 @@
    {
     "episodes": 12,
     "n": 1,
-    "releases": 33
+    "releases": 34
    },
    {
     "episodes": 12,
     "n": 2,
-    "releases": 38
+    "releases": 34
    },
    {
     "episodes": 12,
     "n": 3,
-    "releases": 23
+    "releases": 22
    }
   ]
  },
@@ -769,7 +778,7 @@
    {
     "episodes": 11,
     "n": 1,
-    "releases": 15
+    "releases": 17
    },
    {
     "episodes": 13,
@@ -791,22 +800,22 @@
    {
     "episodes": 13,
     "n": 1,
-    "releases": 29
+    "releases": 30
    },
    {
     "episodes": 13,
     "n": 2,
-    "releases": 50
-   },
-   {
-    "episodes": 13,
-    "n": 3,
     "releases": 34
    },
    {
     "episodes": 13,
+    "n": 3,
+    "releases": 30
+   },
+   {
+    "episodes": 13,
     "n": 4,
-    "releases": 35
+    "releases": 32
    }
   ]
  },
@@ -865,7 +874,7 @@
     "episodes": 25,
     "n": 1,
     "parts": "12+13",
-    "releases": 44
+    "releases": 46
    },
    {
     "episodes": 12,
@@ -885,23 +894,23 @@
    {
     "episodes": 25,
     "n": 1,
-    "releases": 25
+    "releases": 26
    },
    {
     "episodes": 24,
     "n": 2,
-    "releases": 34
+    "releases": 33
    },
    {
     "episodes": 24,
     "n": 3,
-    "releases": 15
+    "releases": 11
    },
    {
     "episodes": 23,
     "n": 4,
     "parts": "12+11",
-    "releases": 9
+    "releases": 1
    }
   ]
  },
@@ -941,22 +950,22 @@
    {
     "episodes": 12,
     "n": 1,
-    "releases": 22
+    "releases": 25
    },
    {
     "episodes": 12,
     "n": 2,
-    "releases": 46
+    "releases": 29
    },
    {
     "episodes": 12,
     "n": 3,
-    "releases": 12
+    "releases": 8
    },
    {
     "episodes": 12,
     "n": 4,
-    "releases": 12
+    "releases": 9
    }
   ]
  },
@@ -996,7 +1005,7 @@
    {
     "episodes": 24,
     "n": 2,
-    "releases": 58
+    "releases": 55
    }
   ]
  }
