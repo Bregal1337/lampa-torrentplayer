@@ -571,17 +571,17 @@
    {
     "episodes": 21,
     "n": 11,
-    "releases": 24
+    "releases": 23
    },
    {
     "episodes": 33,
     "n": 12,
-    "releases": 24
+    "releases": 23
    },
    {
     "episodes": 20,
     "n": 13,
-    "releases": 25
+    "releases": 24
    },
    {
     "episodes": 25,
@@ -591,32 +591,32 @@
    {
     "episodes": 28,
     "n": 15,
-    "releases": 25
+    "releases": 24
    },
    {
     "episodes": 13,
     "n": 16,
-    "releases": 24
+    "releases": 23
    },
    {
     "episodes": 11,
     "n": 17,
-    "releases": 25
+    "releases": 24
    },
    {
     "episodes": 21,
     "n": 18,
-    "releases": 26
+    "releases": 25
    },
    {
     "episodes": 20,
     "n": 19,
-    "releases": 25
+    "releases": 24
    },
    {
     "episodes": 87,
     "n": 20,
-    "releases": 25
+    "releases": 24
    }
   ]
  },
@@ -639,107 +639,107 @@
    {
     "episodes": 14,
     "n": 3,
-    "releases": 658
+    "releases": 640
    },
    {
     "episodes": 39,
     "n": 4,
-    "releases": 665
+    "releases": 648
    },
    {
     "episodes": 13,
     "n": 5,
-    "releases": 659
+    "releases": 640
    },
    {
     "episodes": 52,
     "n": 6,
-    "releases": 665
+    "releases": 646
    },
    {
     "episodes": 33,
     "n": 7,
-    "releases": 665
+    "releases": 647
    },
    {
     "episodes": 35,
     "n": 8,
-    "releases": 664
+    "releases": 645
    },
    {
     "episodes": 73,
     "n": 9,
-    "releases": 664
+    "releases": 649
    },
    {
     "episodes": 45,
     "n": 10,
-    "releases": 664
+    "releases": 647
    },
    {
     "episodes": 26,
     "n": 11,
-    "releases": 664
+    "releases": 647
    },
    {
     "episodes": 14,
     "n": 12,
-    "releases": 657
+    "releases": 639
    },
    {
     "episodes": 101,
     "n": 13,
-    "releases": 664
+    "releases": 647
    },
    {
     "episodes": 58,
     "n": 14,
-    "releases": 664
+    "releases": 645
    },
    {
     "episodes": 62,
     "n": 15,
-    "releases": 665
+    "releases": 648
    },
    {
     "episodes": 50,
     "n": 16,
-    "releases": 665
+    "releases": 647
    },
    {
     "episodes": 56,
     "n": 17,
-    "releases": 664
+    "releases": 647
    },
    {
     "episodes": 55,
     "n": 18,
-    "releases": 664
+    "releases": 647
    },
    {
     "episodes": 74,
     "n": 19,
-    "releases": 668
+    "releases": 650
    },
    {
     "episodes": 14,
     "n": 20,
-    "releases": 661
+    "releases": 644
    },
    {
     "episodes": 197,
     "n": 21,
-    "releases": 676
+    "releases": 665
    },
    {
     "episodes": 67,
     "n": 22,
-    "releases": 673
+    "releases": 651
    },
    {
     "episodes": 25,
     "n": 23,
-    "releases": 663
+    "releases": 641
    }
   ]
  },

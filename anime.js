@@ -8,7 +8,7 @@
   // Карточки открываются обычной карточкой TMDB, поэтому кнопка «Торренты» работает как всегда.
   // ---------------------------------------------------------------------------
 
-  var VERSION = '1.5.0';
+  var VERSION = '1.6.0';
   var HOSTS = ['https://shikimori.io', 'https://shikimori.rip'];
   var REDIRECT = 'urn:ietf:wg:oauth:2.0:oob';
   var PAGE = 20;
@@ -900,12 +900,21 @@
     return units.sort(byAired);
   }
 
+  // Сохранённые части отдаём сразу, даже устаревшие (а устаревшие освежаем в фоне): иначе при медленном
+  // ответе Shikimori экран сериала собрал бы сезоны по-другому и отметки легли бы не на те серии
   function unitsFor(movie, done) {
     var key = tmdbKey(movie);
     var hit = cacheGet('tva_units', key);
 
     if (key.indexOf('tv') !== 0) return done(null);
-    if (hit && Date.now() - hit.t < (hit.ongoing ? 86400000 : 7 * 86400000)) return done(hit.d);
+
+    if (hit) {
+      done(hit.d);
+
+      if (Date.now() - hit.t < (hit.ongoing ? 86400000 : 7 * 86400000)) return;
+
+      done = function () {};
+    }
 
     mapShard('t', movie.id, function (shard) {
       var pairs = shard['t' + movie.id];
@@ -1661,7 +1670,8 @@
     };
 
     shikiForTmdb(job.movie, function (entry) {
-      var parts = shikiForSeason(entry, job.season.season, job.season.air_date);
+      // Сезон собран tv.js по тайтлам Shikimori — части известны точно
+      var parts = job.season.parts && job.season.parts.length ? job.season.parts : shikiForSeason(entry, job.season.season, job.season.air_date);
       var watched = job.season.watched;
       var offset = 0;
 
@@ -1990,7 +2000,7 @@
 
     shikiForTmdb(movie, function (entry) {
       var jobs = seasons.map(function (s) {
-        return { s: s, parts: shikiForSeason(entry, s.season, s.air_date) };
+        return { s: s, parts: s.parts && s.parts.length ? s.parts : shikiForSeason(entry, s.season, s.air_date) };
       }).filter(function (j) { return j.parts.length; });
 
       var ids = [];
