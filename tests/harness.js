@@ -201,13 +201,46 @@
     return { checked: checked, bad: bad };
   }
 
+  // Субтитры из настоящих файлов раздачи (tests/subs.json): сколько подобралось к серии и какие первые —
+  // их включат MX Player и MPV
+  function subsCase(c, real) {
+    var rec = null;
+
+    for (var id in real) if (real[id].title === c.release) rec = real[id];
+
+    if (!rec) return 'нет списка файлов: ' + c.release.slice(0, 60);
+
+    var files = rec.files.map(function (x, i) { return { path: x[0], id: i + 1, length: x[1] }; });
+    var video = files.filter(function (f) { return f.path.split('/').pop() === c.video; })[0];
+
+    if (!video) return 'нет видео ' + c.video;
+
+    var subs = tvt_api.subs.release(video, files, false, function (f) { return 'ts/stream/' + encodeURIComponent(f.path.split('/').pop()) + '?index=' + f.id; });
+    var first = subs[0] ? subs[0].label : '';
+
+    // Как initSubs: русские — с языком в имени ссылки, надписи — без
+    subs.forEach(function (x) { tvt_api.subs.forPlayer(x, video.path, x.lang >= 0); });
+
+    var names = subs.map(function (x) { return decodeURIComponent(x.url.split('/stream/').pop().split('?')[0]); });
+
+    if (subs.length !== c.count || first.indexOf(c.first) < 0 || (c.name && names[0] !== c.name)) return c.video + ': ' + subs.length + ' шт., первые — ' + (first || 'нет') + ' → ' + names.join(' | ');
+
+    return 'ok';
+  }
+
   function run() {
     var out = {};
     var cases = [];
     var real = {};
 
+    var subs = [];
+
     return fetch('files.json').then(function (r) { return r.json(); }).then(function (list) {
       cases = list;
+
+      return fetch('subs.json');
+    }).then(function (r) { return r.json(); }).then(function (list) {
+      subs = list;
 
       return fetch('corpus/index.json');
     }).then(function (r) { return r.json(); }).then(function (files) {
@@ -231,6 +264,10 @@
 
             if (mine.length) out[name].files = mine.map(function (c) { return fileCase(c, built); });
             if (real[name]) out[name].real = realFiles(real[name], built);
+
+            var my_subs = subs.filter(function (c) { return c.title === name; });
+
+            if (my_subs.length) out[name].subs = my_subs.map(function (c) { return subsCase(c, real[name] || {}); });
           } catch (e) {
             out[name] = { error: String(e && e.stack || e) };
           }

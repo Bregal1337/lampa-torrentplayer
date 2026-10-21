@@ -55,6 +55,8 @@ def show(name, s):
     out = name + ': ' + ' | '.join(parts) + ('  (' + s['how'] + ')' if s.get('how') else '')
     for f in s.get('files') or []:
         out += '\n    файлы: ' + f
+    for f in s.get('subs') or []:
+        out += '\n    субтитры: ' + f
     if s.get('real'):
         out += '\n    настоящие файлы: %d раздач, расходится %d' % (s['real']['checked'], len(s['real']['bad']))
         for b in s['real']['bad'][:12]:

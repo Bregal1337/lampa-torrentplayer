@@ -7,7 +7,7 @@
   if (window.tvt_plugin_ready) return;
   window.tvt_plugin_ready = true;
 
-  var VERSION = '1.15.0';
+  var VERSION = '1.15.1';
 
   // ---------------------------------------------------------------------------
   // Разбор названия раздачи
@@ -2879,8 +2879,41 @@
     if (list.some(function (x) { return x.lang >= 0; })) list = list.filter(function (x) { return x.lang >= 0; });
 
     return list.sort(function (a, b) { return b.score - a.score; }).slice(0, 4).map(function (x) {
-      return { label: subLabel(x.f.path, x.lang), url: url_of(x.f) };
+      return { label: subLabel(x.f.path, x.lang), url: url_of(x.f), lang: x.lang, signs: /надпис|sign/i.test(x.f.path) };
     });
+  }
+
+  // Имя субтитров в ссылке TorrServer (файл он берёт по index, имя в пути не читает): «<видео>.ru.ass».
+  // По нему mpv узнаёт язык и сам включает русские, если в его настройках язык субтитров — русский;
+  // надписи — «<видео>.ru.signs.ass», без языка, чтобы сами не включались вместо полных
+  function subForPlayer(sub, video_path, russian) {
+    var m = /\/stream\/([^?]*)/.exec(sub.url || '');
+
+    if (!m || !russian) return sub;
+
+    var ext = fileExt(decodeURIComponent(m[1]));
+    var base = (video_path || '').split('/').pop().replace(/\.[^.]+$/, '') || 'subtitles';
+
+    if (SUB_EXT.indexOf(ext) < 0) return sub;
+
+    sub.url = sub.url.replace(/\/stream\/[^?]*/, '/stream/' + encodeURIComponent(base + '.ru' + (sub.signs ? '.signs' : '') + '.' + ext));
+    if (!sub.signs) sub.language = 'ru';
+
+    return sub;
+  }
+
+  // Субтитры, которые нашла сама Lampa (файлы с тем же именем, что у видео), — по алфавиту папок, и «надписи»
+  // оказываются раньше полных («Genkaku Team надписи» < «Genkaku Team полные»). MX Player и MPV включают первые
+  // из списка — и вместо субтитров показывают одни вывески. Русские полные — первыми, надписи — в конец
+  function sortSubs(list) {
+    return list.map(function (s, i) {
+      var text = (s.label || '') + ' ' + decodeURIComponent((s.url || '').split('?')[0]);
+
+      s.lang = subLang(text);
+      s.signs = /надпис|sign/i.test(text);
+
+      return { s: s, i: i, score: s.lang * 10 - (s.signs ? 5 : 0) };
+    }).sort(function (a, b) { return (b.score - a.score) || (a.i - b.i); }).map(function (x) { return x.s; });
   }
 
   function initSubs() {
@@ -2890,7 +2923,6 @@
       var el = e.element;
       var files = e.params.files || [];
 
-      if (el.subtitles && el.subtitles.length) return;
       if (!files.some(function (f) { return SUB_EXT.indexOf(fileExt(f.path)) >= 0; })) return;
 
       var hash = el.torrent_hash;
@@ -2898,9 +2930,19 @@
         return Lampa.Torserver.stream(f.path, hash, f.id).replace('&preload', '&play');
       };
 
+      // Свой подбор (по номеру серии, полные русские первыми) заменяет найденное Lampa; ничего не нашли — её список, но по порядку
       var subs = releaseSubs(el, files, (e.items || []).length === 1, url_of);
 
+      if (!subs.length && el.subtitles && el.subtitles.length) subs = sortSubs(el.subtitles);
       if (!subs.length) return;
+
+      // Язык не указан, но раздача с русскими субтитрами («[RUS(ext), JAP+Sub]») — значит, русские
+      var rus_release = !!(torrent_ctx && torrent_ctx.r && torrent_ctx.r.rus_subs);
+
+      subs.forEach(function (s, i) {
+        s.index = i;
+        subForPlayer(s, el.path, s.lang === 2 || (s.lang === 0 && rus_release));
+      });
 
       var copy = (el.playlist || []).filter(function (p) { return p !== el && p.url === el.url; })[0];
 
@@ -6150,7 +6192,7 @@
     // Для anime.js: свои файлы в репозитории синхронизации и открытие сериала на нужном сезоне
     store: { ready: function () { return !!syncConfig(); }, get: storeGet, put: storePut, info: storeInfo },
     openSeason: function (id, season) { window.tvt_season_hint = { id: id, season: season, t: Date.now() }; },
-    subs: { release: releaseSubs, episodeNo: fileEpisodeNo, online: onlineSubs, targets: osTargets, parse: osParse },
+    subs: { release: releaseSubs, forPlayer: subForPlayer, episodeNo: fileEpisodeNo, online: onlineSubs, targets: osTargets, parse: osParse },
     version: VERSION
   };
 
