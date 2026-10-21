@@ -7,7 +7,7 @@
   if (window.tvt_plugin_ready) return;
   window.tvt_plugin_ready = true;
 
-  var VERSION = '1.15.1';
+  var VERSION = '1.15.2';
 
   // ---------------------------------------------------------------------------
   // Разбор названия раздачи
@@ -2916,8 +2916,24 @@
     }).sort(function (a, b) { return (b.score - a.score) || (a.i - b.i); }).map(function (x) { return x.s; });
   }
 
+  // Субтитры файлов открытой раздачи — по «хеш:номер файла». Ими пользуется встроенный mpv в Lampa для ПК
+  // (lampa-mpv.js): Lampa запускает его с одной ссылкой на видео, без субтитров
+  var sub_map = {};
+
+  function streamKey(url) {
+    var h = /[?&]link=([^&]+)/.exec(url || '');
+    var i = /[?&]index=(\d+)/.exec(url || '');
+
+    return h && i ? decodeURIComponent(h[1]).toLowerCase() + ':' + i[1] : '';
+  }
+
+  window.tvt_subs_for = function (url) {
+    return sub_map[streamKey(url)] || null;
+  };
+
   function initSubs() {
     Lampa.Listener.follow('torrent_file', function (e) {
+      if (e.type === 'list_open') sub_map = {};
       if (e.type !== 'render' || !e.element || !e.params) return;
 
       var el = e.element;
@@ -2943,6 +2959,9 @@
         s.index = i;
         subForPlayer(s, el.path, s.lang === 2 || (s.lang === 0 && rus_release));
       });
+
+      el.tvt_subs = true;
+      sub_map[streamKey(el.url)] = subs;
 
       var copy = (el.playlist || []).filter(function (p) { return p !== el && p.url === el.url; })[0];
 
@@ -3441,6 +3460,20 @@
     if (found) {
       ap.picked = true;
       if (!t.movie) rememberSession(ap.movie, t, found.element.torrent_hash, ap.files);
+
+      // Приложение Lampa отдаёт MX Player и MPV субтитры только той серии, с которой начали, — следующие серии
+      // плейлиста идут без них. У серии свои субтитры из раздачи — плееру одна серия, следующую экран сериала
+      // включит сам (single). Встроенный mpv в Lampa для ПК плейлиста и так не получает
+      if (!t.movie && found.element.tvt_subs && Lampa.Platform && Lampa.Platform.is && Lampa.Platform.is('android')) {
+        var own = (found.element.playlist || []).filter(function (p) { return p.url === found.element.url; })[0];
+
+        if (own) {
+          found.element.playlist = [own];
+          t.single = true;
+        }
+      }
+
+      if (!t.movie && window.LampaMpv) t.single = true;
       onlineSubs(ap, found.element, function () { found.item.trigger('hover:enter'); });
     } else {
       var missing = !t.movie && ap.missing;
@@ -4466,6 +4499,8 @@
       if (serial) {
         resume = { season: target.season, episode: target.episode };
         saveTitlePrefs(movie, { last: { season: target.season, episode: target.episode, t: Date.now() } });
+        cancelNext();
+        last_launch = { target: target, t: Date.now() };
       }
 
       launch(it, target, []);
@@ -4511,7 +4546,74 @@
       updateEpisodeStates();
       updateDetails();
       sendProgress();
+      checkNext();
     };
+
+    // --- следующая серия сама: плеер получил одну серию (single — ради её субтитров, см. autoPick) ---
+
+    var last_launch = null;
+    var next_timer = null;
+
+    function cancelNext(text) {
+      if (!next_timer) return;
+
+      clearTimeout(next_timer);
+      next_timer = null;
+      $(document).off('keydown.tvtnext');
+
+      if (text) Lampa.Noty.show(text);
+    }
+
+    // Серию досмотрели (≥ 90%) и вернулись из плеера — через 5 секунд включаем следующую, любая кнопка отменяет
+    function checkNext() {
+      var l = last_launch;
+
+      if (!l || l.done || !l.target.single || next_timer) return;
+      // Lampa для ПК: mpv ещё играет (титры), отметка «досмотрено» приходит раньше конца
+      if (window.LampaMpv && window.LampaMpv.isPlaying()) return;
+      if (Date.now() - l.t < 60000 || !isWatched(episodeView(movie, l.target.season, l.target.episode))) return;
+
+      l.done = true;
+
+      var nx = nextEpisode(movie, l.target.season, l.target.episode);
+      var act = Lampa.Activity.active && Lampa.Activity.active();
+
+      if (!nx || (act && act.activity !== _this.activity)) return;
+
+      var ep = episodesOf(nx.season).filter(function (x) { return x.episode_number === nx.episode; })[0];
+
+      if (ep && isFuture(ep.air_date)) return;
+
+      Lampa.Noty.show('Через 5 секунд — ' + nx.season + ' сезон, ' + nx.episode + ' серия. Любая кнопка — отменить');
+      $(document).on('keydown.tvtnext', function () { cancelNext('Следующая серия не включится'); });
+
+      next_timer = setTimeout(function () {
+        next_timer = null;
+        $(document).off('keydown.tvtnext');
+
+        var go = function () {
+          cur.episode = nx.episode;
+
+          if (cols.episodes) {
+            cols.episodes.el.find('.tvt-ep').removeClass('active');
+            $(episodeEl(nx.episode)).addClass('active');
+          }
+
+          updateDetails();
+          _this.play(false);
+        };
+
+        if (cur.season !== nx.season) selectSeason(nx.season, go);
+        else go();
+      }, 5000);
+    }
+
+    // Lampa для ПК: mpv закрылся — Lampa уже записала, докуда досмотрели
+    if (window.LampaMpv && window.LampaMpv.on) {
+      window.LampaMpv.on(function (type) {
+        if (type === 'exit' && !_this.destroyed) setTimeout(function () { _this.refresh(); }, 1500);
+      });
+    }
 
     // Сколько серий каждого сезона досмотрено (в нумерации раздач) — для других плагинов,
     // например anime.js переносит это в список Shikimori
@@ -4943,6 +5045,8 @@
     this.stop = function () {};
 
     this.destroy = function () {
+      this.destroyed = true;
+      cancelNext();
       clearTimeout(season_timer);
       clearTimeout(refresh_timer);
       if (Lampa.Timeline.listener) Lampa.Timeline.listener.remove('update', onTimeline);
