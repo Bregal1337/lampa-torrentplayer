@@ -1,0 +1,17 @@
+[
+  {"title": "Bleach", "release": "[ТВ-2, часть 3] (14 из 14) Complete [1080p]", "file": "[AniLibria] Bleach Sennen Kessen-hen Soukoku-tan - {n:02} [1080p].mkv", "n": [1, 14], "expect": [2, 27]},
+  {"title": "Bleach", "release": "(2 сезон: Части 1-3: 1-40 серии из 40)", "file": "Bleach_TYBW_{n:02}.mkv", "n": [1, 40], "expect": [2, 1]},
+  {"title": "Bleach", "release": "(1 сезон: 168-366 серии из 366) / Bleach / 2004-2012 / ДБ (СВ-Дубль) / HEVC", "file": "Bleach - {n:03}.mkv", "n": [168, 366], "expect": [1, 168]},
+  {"title": "Bleach", "release": "Блич: Тысячелетняя кровавая война — Конфликт (ТВ-2, часть 3)", "file": "[Erai-raws] Bleach - Sennen Kessen-hen - {n:02} [1080p].mkv", "n": [27, 40], "expect": [2, 27]},
+  {"title": "Bleach", "release": "(2 сезон: Часть 2: 1-13 серии из 13) / Bleach: Sennen Kessen Hen / 2023 / ДБ, 2 x ПМ", "file": "Bleach.TYBW.S02E{n:02}.1080p.mkv", "n": [1, 13], "expect": [2, 14]},
+  {"title": "Mushoku_Tensei", "release": "(ТВ-1, Часть 2) / Mushoku Tensei: Isekai Ittara Honki Dasu [TV] [12 из 12]", "file": "Mushoku Tensei - {n:02}.mkv", "n": [1, 12], "expect": [1, 12]},
+  {"title": "Mushoku_Tensei", "release": "(ТВ-2, часть 2) / Mushoku Tensei II: Isekai Ittara Honki Dasu [TV] [12 из 12]", "file": "[SubsPlease] Mushoku Tensei S2 - {n:02} (1080p).mkv", "n": [13, 24], "expect": [2, 13]},
+  {"title": "Dr_Stone", "release": "(4 сезон: 3 часть: 1-13 серии из 13)", "file": "Dr. Stone - {n:02}.mkv", "n": [1, 13], "expect": [4, 25]},
+  {"title": "Attack_on_Titan", "release": "(ТВ-3, часть 2) / Shingeki no Kyojin Season 3", "file": "[Group] Shingeki no Kyojin S3 - {n:02} [BD 1080p].mkv", "n": [13, 22], "expect": [3, 13]},
+  {"title": "Attack_on_Titan", "release": "(ТВ-3, часть 2) / Shingeki no Kyojin Season 3", "file": "Attack on Titan Season 3 Part 2 - {n:02}.mkv", "n": [1, 10], "expect": [3, 13]},
+  {"title": "Spy_x_Family", "release": "Семья шпиона (ТВ-1, часть 2) / Spy x Family Part 2", "file": "[AniLibria] Spy x Family - {n:02}.mkv", "n": [1, 13], "expect": [1, 13]},
+  {"title": "Jujutsu_Kaisen", "release": "Магическая битва (ТВ-2) / Jujutsu Kaisen / Sorcery Fight / JJK 2nd Season [TV] [23 из 23] [RUS(int)", "file": "Jujutsu Kaisen - {n:02}.mkv", "n": [25, 47], "expect": [2, 1]},
+  {"title": "Jujutsu_Kaisen", "release": "Магическая битва 2 сезон (1-23 из 23)", "file": "Jujutsu Kaisen S2 - {n:02}.mkv", "n": [1, 23], "expect": [2, 1]},
+  {"title": "One_Piece", "release": "Ван-Пис / One Piece [1061-1118] (1999-2024) WEBRip-AVC | Persona99", "file": "One Piece - {n:04}.mkv", "n": [1061, 1063], "expect": [21, 170]},
+  {"title": "Death_Note", "release": "", "file": "Death Note - {n:02}.mkv", "n": [1, 37], "expect": [1, 1]}
+]

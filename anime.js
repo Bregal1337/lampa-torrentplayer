@@ -852,6 +852,101 @@
     return list[season - 1] ? [list[season - 1]] : [];
   }
 
+  // ---------------------------------------------------------------------------
+  // Для tv.js: части сериала на Shikimori — тайтлы TV и ONA этой карточки TMDB по порядку выхода,
+  // с номером сезона из карты (0 — карта сезона не знает) и тайтлы франшизы, которых в карте ещё нет
+  // (extra: часть только вышла). По ним tv.js собирает сезоны и части так, как их считают трекеры
+  // («Блич»: 1 сезон — 366 серий, 2 сезон — «Тысячелетняя кровавая война» из четырёх частей)
+  // ---------------------------------------------------------------------------
+
+  var UNIT_FIELDS = 'id name russian english kind status episodes episodesAired franchise airedOn { date } releasedOn { date }';
+
+  function unitOf(a, season, extra) {
+    return {
+      id: +a.id,
+      name: a.name || '',
+      russian: a.russian || '',
+      english: a.english || '',
+      kind: a.kind,
+      status: a.status || '',
+      episodes: a.episodes || 0,
+      aired_episodes: a.episodesAired || 0,
+      aired: a.airedOn && a.airedOn.date || '',
+      released: a.releasedOn && a.releasedOn.date || '',
+      season: season || 0,
+      extra: !!extra
+    };
+  }
+
+  // pairs — [[id, сезон], …] из карты, mapped — эти тайтлы с Shikimori, franchise — тайтлы TV всей франшизы.
+  // ONA берём, только если карта знает её сезон: остальные ONA франшизы — короткие вставки
+  function unitsFrom(pairs, mapped, franchise) {
+    var season = {};
+
+    pairs.forEach(function (p) { season[p[0]] = p[1]; });
+
+    var units = (mapped || []).filter(function (a) {
+      return a.kind === 'tv' || (a.kind === 'ona' && season[a.id] > 0);
+    }).map(function (a) { return unitOf(a, season[a.id], false); }).filter(function (u) { return u.aired; });
+
+    var first = units.reduce(function (min, u) { return !min || u.aired < min ? u.aired : min; }, '');
+
+    (franchise || []).forEach(function (a) {
+      var u = unitOf(a, 0, true);
+
+      if (a.kind === 'tv' && !(u.id in season) && u.aired && first && u.aired > first) units.push(u);
+    });
+
+    return units.sort(byAired);
+  }
+
+  function unitsFor(movie, done) {
+    var key = tmdbKey(movie);
+    var hit = cacheGet('tva_units', key);
+
+    if (key.indexOf('tv') !== 0) return done(null);
+    if (hit && Date.now() - hit.t < (hit.ongoing ? 86400000 : 7 * 86400000)) return done(hit.d);
+
+    mapShard('t', movie.id, function (shard) {
+      var pairs = shard['t' + movie.id];
+
+      if (!pairs || !pairs.length) return done(null);
+
+      gql('{ animes(ids: ' + arg(pairs.map(function (p) { return p[0]; }).join(',')) + ', limit: 50, censored: false) { ' + UNIT_FIELDS + ' } }', function (data) {
+        var mapped = data.animes || [];
+        var franchise = (mapped.filter(function (a) { return a.franchise; })[0] || {}).franchise;
+        var finish = function (list) {
+          var units = unitsFrom(pairs, mapped, list);
+
+          cacheSet('tva_units', key, { t: Date.now(), ongoing: units.some(function (u) { return u.status !== 'released'; }), d: units }, 100);
+          done(units);
+        };
+
+        // Франшиза нужна, только если на TMDB серий больше, чем в тайтлах из карты: новая часть ещё не в карте
+        var known = 0;
+
+        unitsFrom(pairs, mapped, []).forEach(function (u) { known += u.episodes || u.aired_episodes; });
+
+        if (!franchise || (movie.number_of_episodes || 0) <= known + 2) return finish([]);
+
+        gql('{ animes(franchise: ' + arg(franchise) + ', kind: "tv", limit: 50, order: aired_on, censored: false) { ' + UNIT_FIELDS + ' } }', function (d) {
+          finish(d.animes || []);
+        }, function () { finish([]); }, { priority: true });
+      }, function () { done(null); }, { priority: true });
+    });
+  }
+
+  window.tvt_units = function (movie, done) {
+    if (!movie || !movie.id || !isAnimeMovie(movie)) return done(null);
+
+    try {
+      unitsFor(movie, done);
+    } catch (e) {
+      console.log('Anime', 'units', e);
+      done(null);
+    }
+  };
+
   // Аниме: жанр «Анимация» и Япония — или карточку открывали из раздела «Аниме» (на TMDB жанр бывает не проставлен)
   function isAnimeMovie(movie) {
     var genres = (movie.genres || []).map(function (g) { return g.id; }).concat(movie.genre_ids || []);
@@ -2293,7 +2388,7 @@
     console.log('Anime', 'started', VERSION);
   }
 
-  window.tva_api = { version: VERSION, login: login, phoneKeys: phoneKeys, phoneCode: phoneCode, parseKeys: parseKeys, exchange: function (code) { exchangeCode(code, clientKeys()); }, pullAuth: pullAuth, findTmdb: findTmdb, shikiForTmdb: shikiForTmdb, shikiForSeason: shikiForSeason, baseName: baseName, gql: gql, ratesRefresh: ratesRefresh, markFor: markFor, rates: function () { return rates; }, tmdbIndex: function () { return tmdb_index; }, qrWindow: qrWindow };
+  window.tva_api = { version: VERSION, login: login, phoneKeys: phoneKeys, phoneCode: phoneCode, parseKeys: parseKeys, exchange: function (code) { exchangeCode(code, clientKeys()); }, pullAuth: pullAuth, findTmdb: findTmdb, shikiForTmdb: shikiForTmdb, shikiForSeason: shikiForSeason, unitsFrom: unitsFrom, baseName: baseName, gql: gql, ratesRefresh: ratesRefresh, markFor: markFor, rates: function () { return rates; }, tmdbIndex: function () { return tmdb_index; }, qrWindow: qrWindow };
 
   if (window.appready) start();
   else {

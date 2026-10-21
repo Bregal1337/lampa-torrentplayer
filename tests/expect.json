@@ -1,0 +1,1003 @@
+{
+ "Apothecary_Diaries": {
+  "how": "Shikimori",
+  "seasons": [
+   {
+    "episodes": 24,
+    "n": 1,
+    "releases": 28
+   },
+   {
+    "episodes": 24,
+    "n": 2,
+    "releases": 32,
+    "tmdb": 1
+   },
+   {
+    "episodes": 12,
+    "n": 3,
+    "releases": 6,
+    "tmdb": 1
+   }
+  ]
+ },
+ "Attack_on_Titan": {
+  "files": [
+   "ok",
+   "ok"
+  ],
+  "how": "Shikimori",
+  "seasons": [
+   {
+    "episodes": 25,
+    "n": 1,
+    "releases": 33
+   },
+   {
+    "episodes": 12,
+    "n": 2,
+    "releases": 49
+   },
+   {
+    "episodes": 22,
+    "n": 3,
+    "parts": "12+10",
+    "releases": 42
+   },
+   {
+    "episodes": 28,
+    "n": 4,
+    "parts": "16+12",
+    "releases": 54
+   }
+  ]
+ },
+ "Black_Clover": {
+  "how": "Shikimori: как на TMDB",
+  "seasons": [
+   {
+    "episodes": 170,
+    "n": 1,
+    "releases": 1
+   },
+   {
+    "episodes": 26,
+    "n": 2,
+    "releases": 7
+   }
+  ]
+ },
+ "Bleach": {
+  "files": [
+   "ok",
+   "ok",
+   "ok",
+   "ok",
+   "ok"
+  ],
+  "how": "Shikimori",
+  "seasons": [
+   {
+    "episodes": 366,
+    "n": 1,
+    "releases": 12
+   },
+   {
+    "episodes": 50,
+    "n": 2,
+    "parts": "13+13+14+10",
+    "releases": 47
+   }
+  ]
+ },
+ "Blue_Lock": {
+  "how": "Shikimori",
+  "seasons": [
+   {
+    "episodes": 24,
+    "n": 1,
+    "releases": 9
+   },
+   {
+    "episodes": 14,
+    "n": 2,
+    "releases": 5,
+    "tmdb": 1
+   }
+  ]
+ },
+ "Breaking_Bad": {
+  "how": "без изменений",
+  "seasons": [
+   {
+    "episodes": 7,
+    "n": 1,
+    "releases": 77
+   },
+   {
+    "episodes": 13,
+    "n": 2,
+    "releases": 71
+   },
+   {
+    "episodes": 13,
+    "n": 3,
+    "releases": 69
+   },
+   {
+    "episodes": 13,
+    "n": 4,
+    "releases": 66
+   },
+   {
+    "episodes": 16,
+    "n": 5,
+    "releases": 71
+   }
+  ]
+ },
+ "Chainsaw_Man": {
+  "how": "Shikimori: как на TMDB",
+  "seasons": [
+   {
+    "episodes": 12,
+    "n": 1,
+    "releases": 63
+   }
+  ]
+ },
+ "Cyberpunk_Edgerunners": {
+  "how": "без изменений",
+  "seasons": [
+   {
+    "episodes": 10,
+    "n": 1,
+    "releases": 49
+   },
+   {
+    "episodes": 10,
+    "n": 2,
+    "releases": 9
+   }
+  ]
+ },
+ "Dandadan": {
+  "how": "Shikimori",
+  "seasons": [
+   {
+    "episodes": 12,
+    "n": 1,
+    "releases": 37
+   },
+   {
+    "episodes": 12,
+    "n": 2,
+    "releases": 23,
+    "tmdb": 1
+   }
+  ]
+ },
+ "Death_Note": {
+  "files": [
+   "ok"
+  ],
+  "how": "Shikimori: как на TMDB",
+  "seasons": [
+   {
+    "episodes": 37,
+    "n": 1,
+    "releases": 46
+   }
+  ]
+ },
+ "Demon_Slayer": {
+  "how": "Shikimori: как на TMDB",
+  "seasons": [
+   {
+    "episodes": 26,
+    "n": 1,
+    "releases": 8
+   },
+   {
+    "episodes": 7,
+    "n": 2,
+    "releases": 16
+   },
+   {
+    "episodes": 11,
+    "n": 3,
+    "releases": 18
+   },
+   {
+    "episodes": 11,
+    "n": 4,
+    "releases": 10
+   },
+   {
+    "episodes": 8,
+    "n": 5,
+    "releases": 6
+   }
+  ]
+ },
+ "Dr_Stone": {
+  "files": [
+   "ok"
+  ],
+  "how": "Shikimori",
+  "seasons": [
+   {
+    "episodes": 24,
+    "n": 1,
+    "releases": 17
+   },
+   {
+    "episodes": 11,
+    "n": 2,
+    "releases": 20
+   },
+   {
+    "episodes": 22,
+    "n": 3,
+    "parts": "11+11",
+    "releases": 15
+   },
+   {
+    "episodes": 37,
+    "n": 4,
+    "parts": "12+12+13",
+    "releases": 21
+   }
+  ]
+ },
+ "Frieren": {
+  "how": "Shikimori",
+  "seasons": [
+   {
+    "episodes": 28,
+    "n": 1,
+    "releases": 13
+   },
+   {
+    "episodes": 10,
+    "n": 2,
+    "releases": 11,
+    "tmdb": 1
+   }
+  ]
+ },
+ "Fullmetal_Alchemist_Brotherhood": {
+  "how": "Shikimori: как на TMDB",
+  "seasons": [
+   {
+    "episodes": 64,
+    "n": 1,
+    "releases": 14
+   }
+  ]
+ },
+ "Gintama": {
+  "how": "без изменений",
+  "seasons": [
+   {
+    "episodes": 49,
+    "n": 1,
+    "releases": 3
+   },
+   {
+    "episodes": 50,
+    "n": 2,
+    "releases": 7
+   },
+   {
+    "episodes": 51,
+    "n": 3,
+    "releases": 1
+   },
+   {
+    "episodes": 51,
+    "n": 4,
+    "releases": 1
+   },
+   {
+    "episodes": 51,
+    "n": 5,
+    "releases": 1
+   },
+   {
+    "episodes": 13,
+    "n": 6,
+    "releases": 4
+   },
+   {
+    "episodes": 51,
+    "n": 7,
+    "releases": 5
+   },
+   {
+    "episodes": 12,
+    "n": 8,
+    "releases": 5
+   },
+   {
+    "episodes": 13,
+    "n": 9,
+    "releases": 31
+   },
+   {
+    "episodes": 12,
+    "n": 10,
+    "releases": 31
+   },
+   {
+    "episodes": 14,
+    "n": 11,
+    "releases": 31
+   }
+  ]
+ },
+ "Haikyuu": {
+  "how": "Shikimori",
+  "seasons": [
+   {
+    "episodes": 25,
+    "n": 1,
+    "releases": 15
+   },
+   {
+    "episodes": 25,
+    "n": 2,
+    "releases": 19
+   },
+   {
+    "episodes": 10,
+    "n": 3,
+    "releases": 10
+   },
+   {
+    "episodes": 25,
+    "n": 4,
+    "parts": "13+12",
+    "releases": 13
+   }
+  ]
+ },
+ "Hunter_x_Hunter_2011": {
+  "how": "Shikimori: как на TMDB",
+  "seasons": [
+   {
+    "episodes": 62,
+    "n": 1,
+    "releases": 1
+   },
+   {
+    "episodes": 74,
+    "n": 2,
+    "releases": 20
+   },
+   {
+    "episodes": 12,
+    "n": 3,
+    "releases": 1
+   }
+  ]
+ },
+ "Jujutsu_Kaisen": {
+  "files": [
+   "ok",
+   "ok"
+  ],
+  "how": "Shikimori",
+  "seasons": [
+   {
+    "episodes": 24,
+    "n": 1,
+    "releases": 21
+   },
+   {
+    "episodes": 23,
+    "n": 2,
+    "releases": 84,
+    "tmdb": 1
+   },
+   {
+    "episodes": 12,
+    "n": 3,
+    "releases": 18,
+    "tmdb": 1
+   }
+  ]
+ },
+ "Kaiju_No_8": {
+  "how": "Shikimori",
+  "seasons": [
+   {
+    "episodes": 12,
+    "n": 1,
+    "releases": 2
+   },
+   {
+    "episodes": 11,
+    "n": 2,
+    "releases": 2,
+    "tmdb": 1
+   }
+  ]
+ },
+ "Mob_Psycho_100": {
+  "how": "Shikimori: как на TMDB",
+  "seasons": [
+   {
+    "episodes": 12,
+    "n": 1,
+    "releases": 14
+   },
+   {
+    "episodes": 13,
+    "n": 2,
+    "releases": 14
+   },
+   {
+    "episodes": 12,
+    "n": 3,
+    "releases": 19
+   }
+  ]
+ },
+ "Mushoku_Tensei": {
+  "files": [
+   "ok",
+   "ok"
+  ],
+  "how": "Shikimori",
+  "seasons": [
+   {
+    "episodes": 23,
+    "n": 1,
+    "parts": "11+12",
+    "releases": 12
+   },
+   {
+    "episodes": 24,
+    "n": 2,
+    "parts": "12+12",
+    "releases": 55
+   },
+   {
+    "episodes": 14,
+    "n": 3,
+    "releases": 30
+   }
+  ]
+ },
+ "My_Hero_Academia": {
+  "how": "Shikimori: как на TMDB",
+  "seasons": [
+   {
+    "episodes": 13,
+    "n": 1,
+    "releases": 12
+   },
+   {
+    "episodes": 25,
+    "n": 2,
+    "releases": 14
+   },
+   {
+    "episodes": 25,
+    "n": 3,
+    "releases": 15
+   },
+   {
+    "episodes": 25,
+    "n": 4,
+    "releases": 13
+   },
+   {
+    "episodes": 25,
+    "n": 5,
+    "releases": 12
+   },
+   {
+    "episodes": 25,
+    "n": 6,
+    "releases": 12
+   },
+   {
+    "episodes": 21,
+    "n": 7,
+    "releases": 31
+   },
+   {
+    "episodes": 11,
+    "n": 8,
+    "releases": 4
+   }
+  ]
+ },
+ "Naruto_Shippuden": {
+  "how": "без изменений",
+  "seasons": [
+   {
+    "episodes": 32,
+    "n": 1,
+    "releases": 3
+   },
+   {
+    "episodes": 21,
+    "n": 2,
+    "releases": 7
+   },
+   {
+    "episodes": 18,
+    "n": 3,
+    "releases": 2
+   },
+   {
+    "episodes": 17,
+    "n": 4,
+    "releases": 2
+   },
+   {
+    "episodes": 24,
+    "n": 5,
+    "releases": 2
+   },
+   {
+    "episodes": 31,
+    "n": 6,
+    "releases": 2
+   },
+   {
+    "episodes": 8,
+    "n": 7,
+    "releases": 2
+   },
+   {
+    "episodes": 24,
+    "n": 8,
+    "releases": 2
+   },
+   {
+    "episodes": 21,
+    "n": 9,
+    "releases": 1
+   },
+   {
+    "episodes": 25,
+    "n": 10,
+    "releases": 1
+   },
+   {
+    "episodes": 21,
+    "n": 11,
+    "releases": 24
+   },
+   {
+    "episodes": 33,
+    "n": 12,
+    "releases": 24
+   },
+   {
+    "episodes": 20,
+    "n": 13,
+    "releases": 25
+   },
+   {
+    "episodes": 25,
+    "n": 14,
+    "releases": 25
+   },
+   {
+    "episodes": 28,
+    "n": 15,
+    "releases": 25
+   },
+   {
+    "episodes": 13,
+    "n": 16,
+    "releases": 24
+   },
+   {
+    "episodes": 11,
+    "n": 17,
+    "releases": 25
+   },
+   {
+    "episodes": 21,
+    "n": 18,
+    "releases": 26
+   },
+   {
+    "episodes": 20,
+    "n": 19,
+    "releases": 25
+   },
+   {
+    "episodes": 87,
+    "n": 20,
+    "releases": 25
+   }
+  ]
+ },
+ "One_Piece": {
+  "files": [
+   "ok"
+  ],
+  "how": "без изменений",
+  "seasons": [
+   {
+    "episodes": 61,
+    "n": 1,
+    "releases": 50
+   },
+   {
+    "episodes": 16,
+    "n": 2,
+    "releases": 12
+   },
+   {
+    "episodes": 14,
+    "n": 3,
+    "releases": 658
+   },
+   {
+    "episodes": 39,
+    "n": 4,
+    "releases": 665
+   },
+   {
+    "episodes": 13,
+    "n": 5,
+    "releases": 659
+   },
+   {
+    "episodes": 52,
+    "n": 6,
+    "releases": 665
+   },
+   {
+    "episodes": 33,
+    "n": 7,
+    "releases": 665
+   },
+   {
+    "episodes": 35,
+    "n": 8,
+    "releases": 664
+   },
+   {
+    "episodes": 73,
+    "n": 9,
+    "releases": 664
+   },
+   {
+    "episodes": 45,
+    "n": 10,
+    "releases": 664
+   },
+   {
+    "episodes": 26,
+    "n": 11,
+    "releases": 664
+   },
+   {
+    "episodes": 14,
+    "n": 12,
+    "releases": 657
+   },
+   {
+    "episodes": 101,
+    "n": 13,
+    "releases": 664
+   },
+   {
+    "episodes": 58,
+    "n": 14,
+    "releases": 664
+   },
+   {
+    "episodes": 62,
+    "n": 15,
+    "releases": 665
+   },
+   {
+    "episodes": 50,
+    "n": 16,
+    "releases": 665
+   },
+   {
+    "episodes": 56,
+    "n": 17,
+    "releases": 664
+   },
+   {
+    "episodes": 55,
+    "n": 18,
+    "releases": 664
+   },
+   {
+    "episodes": 74,
+    "n": 19,
+    "releases": 668
+   },
+   {
+    "episodes": 14,
+    "n": 20,
+    "releases": 661
+   },
+   {
+    "episodes": 197,
+    "n": 21,
+    "releases": 676
+   },
+   {
+    "episodes": 67,
+    "n": 22,
+    "releases": 673
+   },
+   {
+    "episodes": 25,
+    "n": 23,
+    "releases": 663
+   }
+  ]
+ },
+ "One_Punch_Man": {
+  "how": "Shikimori: как на TMDB",
+  "seasons": [
+   {
+    "episodes": 12,
+    "n": 1,
+    "releases": 33
+   },
+   {
+    "episodes": 12,
+    "n": 2,
+    "releases": 38
+   },
+   {
+    "episodes": 12,
+    "n": 3,
+    "releases": 23
+   }
+  ]
+ },
+ "Oshi_no_Ko": {
+  "how": "Shikimori",
+  "seasons": [
+   {
+    "episodes": 11,
+    "n": 1,
+    "releases": 15
+   },
+   {
+    "episodes": 13,
+    "n": 2,
+    "releases": 14,
+    "tmdb": 1
+   },
+   {
+    "episodes": 11,
+    "n": 3,
+    "releases": 9,
+    "tmdb": 1
+   }
+  ]
+ },
+ "Overlord": {
+  "how": "Shikimori: как на TMDB",
+  "seasons": [
+   {
+    "episodes": 13,
+    "n": 1,
+    "releases": 29
+   },
+   {
+    "episodes": 13,
+    "n": 2,
+    "releases": 50
+   },
+   {
+    "episodes": 13,
+    "n": 3,
+    "releases": 34
+   },
+   {
+    "episodes": 13,
+    "n": 4,
+    "releases": 35
+   }
+  ]
+ },
+ "Re_Zero": {
+  "how": "Shikimori",
+  "seasons": [
+   {
+    "episodes": 25,
+    "n": 1,
+    "releases": 1
+   },
+   {
+    "episodes": 25,
+    "n": 2,
+    "parts": "13+12",
+    "releases": 1,
+    "tmdb": 1
+   },
+   {
+    "episodes": 16,
+    "n": 3,
+    "releases": 1,
+    "tmdb": 1
+   },
+   {
+    "episodes": 19,
+    "n": 4,
+    "releases": 1,
+    "tmdb": 1
+   }
+  ]
+ },
+ "Solo_Leveling": {
+  "how": "Shikimori",
+  "seasons": [
+   {
+    "episodes": 12,
+    "n": 1,
+    "releases": 1
+   },
+   {
+    "episodes": 13,
+    "n": 2,
+    "releases": 1,
+    "tmdb": 1
+   }
+  ]
+ },
+ "Spy_x_Family": {
+  "files": [
+   "ok"
+  ],
+  "how": "Shikimori",
+  "seasons": [
+   {
+    "episodes": 25,
+    "n": 1,
+    "parts": "12+13",
+    "releases": 44
+   },
+   {
+    "episodes": 12,
+    "n": 2,
+    "releases": 20
+   },
+   {
+    "episodes": 13,
+    "n": 3,
+    "releases": 19
+   }
+  ]
+ },
+ "Sword_Art_Online": {
+  "how": "Shikimori",
+  "seasons": [
+   {
+    "episodes": 25,
+    "n": 1,
+    "releases": 25
+   },
+   {
+    "episodes": 24,
+    "n": 2,
+    "releases": 34
+   },
+   {
+    "episodes": 24,
+    "n": 3,
+    "releases": 15
+   },
+   {
+    "episodes": 23,
+    "n": 4,
+    "parts": "12+11",
+    "releases": 9
+   }
+  ]
+ },
+ "The_Boys": {
+  "how": "без изменений",
+  "seasons": [
+   {
+    "episodes": 8,
+    "n": 1,
+    "releases": 92
+   },
+   {
+    "episodes": 8,
+    "n": 2,
+    "releases": 86
+   },
+   {
+    "episodes": 8,
+    "n": 3,
+    "releases": 87
+   },
+   {
+    "episodes": 8,
+    "n": 4,
+    "releases": 161
+   },
+   {
+    "episodes": 8,
+    "n": 5,
+    "releases": 111
+   }
+  ]
+ },
+ "Tokyo_Ghoul": {
+  "how": "Shikimori: как на TMDB",
+  "seasons": [
+   {
+    "episodes": 12,
+    "n": 1,
+    "releases": 22
+   },
+   {
+    "episodes": 12,
+    "n": 2,
+    "releases": 46
+   },
+   {
+    "episodes": 12,
+    "n": 3,
+    "releases": 12
+   },
+   {
+    "episodes": 12,
+    "n": 4,
+    "releases": 12
+   }
+  ]
+ },
+ "Tulsa_King": {
+  "how": "без изменений",
+  "seasons": [
+   {
+    "episodes": 9,
+    "n": 1,
+    "releases": 124
+   },
+   {
+    "episodes": 10,
+    "n": 2,
+    "releases": 103
+   },
+   {
+    "episodes": 10,
+    "n": 3,
+    "releases": 91
+   },
+   {
+    "episodes": 10,
+    "n": 4,
+    "releases": 18
+   }
+  ]
+ },
+ "Vinland_Saga": {
+  "how": "Shikimori: как на TMDB",
+  "seasons": [
+   {
+    "episodes": 24,
+    "n": 1,
+    "releases": 21
+   },
+   {
+    "episodes": 24,
+    "n": 2,
+    "releases": 58
+   }
+  ]
+ }
+}
