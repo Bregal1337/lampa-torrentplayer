@@ -7,7 +7,7 @@
   if (window.tvt_plugin_ready) return;
   window.tvt_plugin_ready = true;
 
-  var VERSION = '1.15.2';
+  var VERSION = '1.15.3';
 
   // ---------------------------------------------------------------------------
   // Разбор названия раздачи
@@ -532,6 +532,12 @@
 
     subsFromTitle(lower, r);
 
+    // 10-битный H.264 (Hi10P) по названию и дорожкам («10bit», «Hi10P», SOFCJ-Raws — у них весь H.264 10-битный);
+    // 10-битный HEVC телевизоры декодируют аппаратно — его не отмечаем
+    var tracks_text = (Array.isArray(el.ffprobe) ? el.ffprobe : []).map(function (x) { return (x.tags && x.tags.title) || ''; }).join(' ').toLowerCase();
+
+    r.hi10 = /10\s*-?\s*bit|\bhi10p?\b|\bma10p\b|sofcj/.test(lower + ' ' + tracks_text) && r.codec !== 'HEVC' && r.codec !== 'AV1';
+
     // Оригинал + субтитры: дорожка на языке оригинала и русские субтитры (по ffprobe или по названию).
     // Есть ключ OpenSubtitles — подходит и раздача без субтитров, их найдём перед запуском
     if (r.orig_audio && (r.rus_subs || osReady())) addUnique(r.types, 'sub');
@@ -669,6 +675,8 @@
 
     if (!seeds) s -= 30;
     if (r.cam) s -= 60;
+    // 10-битный H.264 — на телевизоре в последнюю очередь: нашёлся при запуске (checkVideo) или видно по названию
+    if (isTv() && (isHi10(el) || r.hi10)) s -= 60;
     if (r.is3d) s -= 15;
     // Сборник фильмов и образ диска — сотни файлов и десятки гигабайт, телевизору тяжело
     if (r.pack && !r.seasons.length) s -= 50;
@@ -3439,6 +3447,163 @@
     Lampa.Storage.set('tvt_bad', keep);
   }
 
+  // ---------------------------------------------------------------------------
+  // 10-битный H.264 (Hi10P — так кодируют многие аниме-BDRip, например SOFCJ-Raws): аппаратные декодеры
+  // телевизоров его не умеют, плеер (MX) декодирует программно, четыре слабых ядра не успевают — видео
+  // замедляется, пропадает звук. JacRed разрядность не сообщает, поэтому перед запуском читаем начало файла
+  // через TorrServer (его всё равно качать первым) и смотрим профиль H.264 в заголовке. Только на Android:
+  // процессор компьютера с этим справляется
+  // ---------------------------------------------------------------------------
+
+  var hi10_mem = null;
+
+  function isTv() {
+    return !!(Lampa.Platform && Lampa.Platform.is && Lampa.Platform.is('android'));
+  }
+
+  function hi10Map() {
+    if (!hi10_mem) hi10_mem = readJson('tvt_hi10');
+
+    return hi10_mem;
+  }
+
+  function isHi10(el) {
+    return !!hi10Map()[btih(el) || el.Title || ''];
+  }
+
+  function markHi10(el) {
+    var all = hi10Map();
+    var keys = Object.keys(all);
+
+    if (keys.length > 300) delete all[keys[0]];
+
+    all[btih(el) || el.Title || ''] = Date.now();
+    Lampa.Storage.set('tvt_hi10', all);
+  }
+
+  function bytesOf(text) {
+    return text.split('').map(function (c) { return c.charCodeAt(0); });
+  }
+
+  function findBytes(b, pat, from) {
+    for (var i = from || 0; i <= b.length - pat.length; i++) {
+      var k = 0;
+
+      while (k < pat.length && b[i + k] === pat[k]) k++;
+      if (k === pat.length) return i;
+    }
+
+    return -1;
+  }
+
+  // profile_idc H.264 из заголовка MKV (CodecPrivate после V_MPEG4/ISO/AVC) или MP4 (avcC); 0 — не нашли
+  function avcProfile(b) {
+    var i = findBytes(b, bytesOf('V_MPEG4/ISO/AVC'));
+
+    if (i >= 0) {
+      var j = findBytes(b, [0x63, 0xA2], i);
+
+      if (j > 0 && j - i < 4096) {
+        var first = b[j + 2];
+        var n = 1;
+        var mask = 0x80;
+
+        while (n <= 8 && !(first & mask)) {
+          mask >>= 1;
+          n++;
+        }
+
+        return b[j + 2 + n + 1] || 0;
+      }
+    }
+
+    var a = findBytes(b, bytesOf('avcC'));
+
+    return a >= 0 ? b[a + 5] || 0 : 0;
+  }
+
+  // Первые 512 КБ файла — обычным GET (заголовок Range вызвал бы предзапрос CORS), дальше чтение обрываем
+  function videoProfile(url, done) {
+    var finished = false;
+    var reader = null;
+    var finish = function (p) {
+      if (finished) return;
+
+      finished = true;
+      clearTimeout(timer);
+
+      try { if (reader) reader.cancel(); } catch (e) {}
+
+      done(p);
+    };
+    var timer = setTimeout(function () { finish(0); }, 8000);
+
+    if (typeof fetch !== 'function' || !url) return finish(0);
+
+    fetch(url.replace('&preload', '&play')).then(function (res) {
+      if (!res.ok || !res.body || !res.body.getReader) return finish(0);
+
+      reader = res.body.getReader();
+
+      var buf = new Uint8Array(524288);
+      var got = 0;
+      var step = function () {
+        reader.read().then(function (chunk) {
+          if (finished) return;
+
+          if (chunk.value) {
+            var part = chunk.value.subarray(0, Math.min(chunk.value.length, buf.length - got));
+
+            buf.set(part, got);
+            got += part.length;
+          }
+
+          if (chunk.done || got >= buf.length) return finish(avcProfile(buf.subarray(0, got)));
+
+          step();
+        }, function () { finish(0); });
+      };
+
+      step();
+    }, function () { finish(0); });
+  }
+
+  // 110 — High 10, 122 — High 4:2:2, 244 — High 4:4:4: телевизор не потянет
+  function checkVideo(ap, found, go) {
+    if (!isTv() || !ap.el || isHi10(ap.el)) return go();
+
+    videoProfile(found.element.url, function (profile) {
+      if (autoplay !== ap) return;
+      if ([110, 122, 244].indexOf(profile) < 0) return go();
+
+      markHi10(ap.el);
+
+      var other = !ap.target.movie && ap.missing;
+      var enabled = Lampa.Controller.enabled().name;
+
+      Lampa.Select.show({
+        title: 'Видео 10 бит (H.264 Hi10P): телевизор декодирует его программно и, скорее всего, будет тормозить',
+        items: (other ? [{ title: 'Открыть другую раздачу', other: true }] : []).concat([{ title: 'Всё равно смотреть', play: true }]),
+        onBack: function () {
+          Lampa.Controller.toggle(enabled);
+          finishAutoplay();
+          Lampa.Modal.close();
+          Lampa.Controller.toggle('content');
+        },
+        onSelect: function (a) {
+          Lampa.Controller.toggle(enabled);
+
+          if (a.play) return go();
+
+          finishAutoplay();
+          Lampa.Modal.close();
+          Lampa.Controller.toggle('content');
+          other('hi10');
+        }
+      });
+    });
+  }
+
   function autoPick() {
     var ap = autoplay;
 
@@ -3474,7 +3639,9 @@
       }
 
       if (!t.movie && window.LampaMpv) t.single = true;
-      onlineSubs(ap, found.element, function () { found.item.trigger('hover:enter'); });
+      checkVideo(ap, found, function () {
+        onlineSubs(ap, found.element, function () { found.item.trigger('hover:enter'); });
+      });
     } else {
       var missing = !t.movie && ap.missing;
 
@@ -4516,7 +4683,7 @@
 
       startAutoplay(it.el, movie, target, function () {
         _this.refresh();
-      }, serial ? function () {
+      }, serial ? function (why) {
         var alt = releasesFor(target.season).filter(function (x) {
           return tried.indexOf(releaseKey(x)) < 0 && coversEpisode(x, target.episode, movie, target.season);
         });
@@ -4533,7 +4700,7 @@
           return Lampa.Noty.show('Серии ' + target.episode + ' нет в ' + (tried.length > 1 ? tried.length + ' раздачах' : 'этой раздаче') + ' — выберите раздачу в «Все раздачи»');
         }
 
-        Lampa.Noty.show('Серии ' + target.episode + ' нет в этой раздаче — открываю другую');
+        Lampa.Noty.show(why === 'hi10' ? 'Открываю другую раздачу' : 'Серии ' + target.episode + ' нет в этой раздаче — открываю другую');
         launch(alt[0], target, tried);
       } : null, tried.length > 1 ? 30000 : 0);
     }
