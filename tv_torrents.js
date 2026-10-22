@@ -7,7 +7,7 @@
   if (window.tvt_plugin_ready) return;
   window.tvt_plugin_ready = true;
 
-  var VERSION = '1.15.4';
+  var VERSION = '1.15.5';
 
   // ---------------------------------------------------------------------------
   // Разбор названия раздачи
@@ -274,7 +274,7 @@
 
   // Диапазон серий в раздаче: «серии 1-13 из 23» → [1, 13]; «[ТВ-2, часть 4] (1—8)» → [1, 8]
   function parseEpisodeRange(lower) {
-    var m = lower.match(/(\d{1,4})\s*[-–—]\s*(\d{1,4})\s*(?:серии|серия|серий|эпизоды)?\s*из\s*\d{1,4}/) ||
+    var m = lower.match(/(\d{1,4})\s*[-–—]\s*(\d{1,4})\s*(?:серии|серия|серий|эпизоды)?\s*(?:из|з)\s*\d{1,4}/) ||
       lower.match(/серии:?\s*(\d{1,4})\s*[-–—]\s*(\d{1,4})/) ||
       // «(1 сезон: 208-242 серии)» — без «из»
       lower.match(/(\d{1,4})\s*[-–—]\s*(\d{1,4})\s*(?:серии|серия|серий|эпизоды)(?![а-яё])/) ||
@@ -1017,8 +1017,15 @@
       tracker: '',
       hdr: !!saved.hdr,
       hidecam: typeof saved.hidecam === 'boolean' ? saved.hidecam : true,
+      foreign: false,
       sort: saved.sort || 'smart'
     };
+
+    // Раздачи без названия сериала (парсер присылает и чужое: «11/22/63» к «Гинтаме») скрыты, пока их не показать.
+    // Сезоны — те же, что на экране сериала (seasonReleases): «Сезон 1» «Гинтамы» — это «ТВ-1» и «[201 из 201]»,
+    // а не всё, где в названии написано «Сезон: 1»
+    var by_title = false;
+    var season_sets = null;
 
     if (!object.movie) object.movie = { title: object.search, original_title: object.search };
 
@@ -1049,6 +1056,17 @@
         items = results.map(function (el) {
           return { el: el, r: parseRelease(el, object.movie) };
         });
+
+        by_title = !!(object.movie.id && !object.from_search);
+        items.forEach(function (it) { it.foreign = by_title && !sameTitle(it.el.Title, object.movie); });
+
+        // Название не нашлось ни у одной раздачи (поиск другим языком) — не прячем ничего
+        if (!items.some(function (it) { return !it.foreign; })) {
+          by_title = false;
+          items.forEach(function (it) { it.foreign = false; });
+        }
+
+        season_sets = null;
 
         _this.activity.loader(false);
 
@@ -1092,14 +1110,39 @@
       });
     };
 
+    // Раздачи каждого сезона — как на экране сериала. {} — сезонов нет (фильм, поиск): по номерам в названиях
+    function seasonSets() {
+      if (season_sets) return season_sets;
+
+      season_sets = {};
+      items.forEach(function (it) { it.in_season = {}; });
+
+      if (by_title && is_serial) {
+        realSeasons(object.movie).forEach(function (s) {
+          var n = s.season_number;
+
+          season_sets[n] = seasonReleases(object.movie, items, n);
+          season_sets[n].forEach(function (it) { it.in_season[n] = true; });
+        });
+      }
+
+      return season_sets;
+    }
+
+    function inSeason(it, n) {
+      return seasonSets()[n] ? !!it.in_season[n] : it.r.seasons.indexOf(n) >= 0;
+    }
+
     // Проходит ли раздача все фильтры, кроме фильтра except (для подсчёта чисел на кнопках)
     function pass(it, except) {
       var r = it.r;
 
+      if (except !== 'foreign' && !state.foreign && it.foreign) return false;
+
       if (except !== 'quality' && state.quality && r.res !== state.quality) return false;
       if (except !== 'vtype' && state.vtype && r.types.indexOf(state.vtype) === -1) return false;
       if (except !== 'studio' && state.studio && r.studios.indexOf(state.studio) === -1) return false;
-      if (except !== 'season' && state.season && r.seasons.indexOf(state.season) === -1) return false;
+      if (except !== 'season' && state.season && !inSeason(it, state.season)) return false;
       if (except !== 'source' && state.source && r.source !== state.source) return false;
       if (except !== 'tracker' && state.tracker && trackers(it.el.Tracker).indexOf(state.tracker) === -1) return false;
       if (except !== 'hdr' && state.hdr && !r.hdr) return false;
@@ -1284,7 +1327,16 @@
         }), state.sort, function (v) { set('sort', v, 'o:sort'); });
       }, 'o:sort'));
 
-      var seasons = facet('season', function (it) { return it.r.seasons; });
+      var sets = seasonSets();
+      var model = Object.keys(sets).map(function (n) { return parseInt(n, 10); }).sort(function (a, b) { return a - b; });
+      var seasons = model.length ? {} : facet('season', function (it) { return it.r.seasons; });
+
+      model.forEach(function (n) {
+        var c = items.filter(function (it) { return it.in_season[n] && pass(it, 'season'); }).length;
+
+        if (c) seasons[n] = c;
+      });
+
       var season_list = Object.keys(seasons).map(function (s) { return parseInt(s, 10); }).sort(function (a, b) { return a - b; });
 
       if (is_serial && season_list.length) {
@@ -1329,6 +1381,12 @@
 
       if (cam_count) {
         other.push(chip(state.hidecam ? 'Экранки скрыты' : 'Экранки показаны', cam_count, state.hidecam, function () { set('hidecam', !state.hidecam, 'o:cam'); }, 'o:cam'));
+      }
+
+      var foreign_count = items.filter(function (it) { return it.foreign; }).length;
+
+      if (foreign_count) {
+        other.push(chip(state.foreign ? 'Чужие названия показаны' : 'Чужие названия скрыты', foreign_count, !state.foreign, function () { set('foreign', !state.foreign, 'o:foreign'); }, 'o:foreign'));
       }
 
       if (state.quality || state.vtype || state.studio || state.season || state.source || state.tracker || state.hdr) {
@@ -1836,22 +1894,37 @@
     var out = realSeasons(movie).length <= 1 ? exact.concat(unnamed) : exact.length ? exact : unnamed;
 
     // Аниме: раздача без сезона, но со сквозными номерами серий целиком внутри этого сезона и в его годы
-    // («Блич / Bleach / 2004 / [BDRip 1080p][HEVC][1-189]») — тоже раздача сезона
+    // («Блич / Bleach / 2004 / [BDRip 1080p][HEVC][1-189]») или с числом серий ровно как у этого сезона, и такой
+    // сезон один («Гинтама / Gintama [TV] [201 из 201]» — 1 сезон, 201 серия) — тоже раздача сезона
     if (out === exact && years) {
       var before = 0;
       var season = null;
+      var all_seasons = realSeasons(movie);
 
-      realSeasons(movie).some(function (s) {
+      all_seasons.some(function (s) {
         if (s.season_number === n) return (season = s);
         before += s.episode_count;
       });
 
+      // Столько же серий у другого сезона или части («Семья шпиона»: 2 сезон — 12 серий, первая часть 1 сезона — тоже 12) — не угадываем
+      var same_count = 0;
+
+      if (season) {
+        all_seasons.forEach(function (s) {
+          if (s.episode_count === season.episode_count) same_count++;
+
+          (s.parts && s.parts.length > 1 ? s.parts : []).forEach(function (p) { if (p.to - p.from + 1 === season.episode_count) same_count++; });
+        });
+      }
+
       if (season) {
         out = exact.concat(unnamed.filter(function (it) {
           var g = it.r.ep_range;
+          var by_range = g && g[0] > before && g[1] <= before + season.episode_count;
+          var by_total = !g && same_count === 1 && it.r.total === season.episode_count;
 
           // OVA, спешлы и фильмы под названием сериала («Атака титанов OVA 1-3 (1-8 серии из 8)») — не серии сезона
-          return g && g[0] > before && g[1] <= before + season.episode_count && !it.r.parts && !/\b(?:ova|ona|oad|special|movie)s?\b|спешл|спэшл|фильм/i.test(it.el.Title || '') &&
+          return (by_range || by_total) && !it.r.parts && !/\b(?:ova|ona|oad|special|movie)s?\b|спешл|спэшл|фильм/i.test(it.el.Title || '') &&
             (!it.r.years.length || it.r.years.some(function (y) { return y[1] >= years[0] - 1 && y[0] <= years[1] + 1; }));
         }));
       }
